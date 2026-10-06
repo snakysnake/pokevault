@@ -1363,8 +1363,6 @@ static void draw_home_note(void)
     at(20, 0);
     use_ink(INK_MUTED);
     fputs("A open", stdout);
-    at(21, 0);
-    fputs("SELECT exit", stdout);
 }
 
 static void draw_games(const Dex *dex)
@@ -1419,7 +1417,7 @@ static void draw_game_card(const Dex *dex)
         at(10, 0);
         fputs("or roms/gba.", stdout);
         at(21, 0);
-        fputs("B back       SELECT exit", stdout);
+        fputs("B back", stdout);
         return;
     }
     info = &dex->saves[game_cursor];
@@ -1454,7 +1452,7 @@ static void draw_game_card(const Dex *dex)
     printf("%d caught", dex_owned_count(info));
     at(21, 0);
     use_ink(INK_MUTED);
-    fputs("B back       SELECT exit", stdout);
+    fputs("B back", stdout);
 }
 
 static void tally_progress(const Dex *dex, int *shiny, int *stored, int *in_dex, int *seen, int *unseen)
@@ -1621,7 +1619,7 @@ static void draw_progress_note(const Dex *dex)
     }
     at(21, 0);
     use_ink(INK_MUTED);
-    fputs("B back       SELECT exit", stdout);
+    fputs("B back", stdout);
 }
 
 static void draw_controls(const Dex *dex)
@@ -1639,7 +1637,7 @@ static void draw_controls(const Dex *dex)
     else
         fputs("X filter", stdout);
     at(21, 0);
-    fputs("B menu       SELECT exit", stdout);
+    fputs("B menu", stdout);
 }
 
 static void draw(const Dex *dex)
@@ -1775,9 +1773,6 @@ void ui_run(Dex *dex)
         scanKeys();
         down = keysDownRepeat();
         hit = keysDown();
-
-        if (hit & KEY_SELECT)
-            return;
 
         if (page == PAGE_HOME) {
             if (hit & KEY_A) {
