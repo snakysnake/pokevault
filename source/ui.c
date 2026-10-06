@@ -23,6 +23,12 @@ enum {
     VIEW_DEX = 0,
     VIEW_COPIES = 1,
     VIEW_FILTER = 2,
+    FILTER_CAUGHT = 0,
+    FILTER_SEEN = 1,
+    FILTER_DEX = 2,
+    FILTER_SHINY = 3,
+    FILTER_RULES = 4,
+    FILTER_PAGE = 20,
     INK_SHINY = 6,
     INK_MUTED = 8,
     INK_GOLD = 11,
@@ -49,8 +55,12 @@ static int copy_scroll;
 static int view = VIEW_DEX;
 static int caught;
 static int filter_caught;
+static int filter_seen;
 static int filter_dex;
+static int filter_shiny;
+static int filter_version[MAX_SAVES];
 static int filter_cursor;
+static int filter_scroll;
 
 static const char *const ink_code[16] = {
     "\x1b[30;0m", "\x1b[31;0m", "\x1b[32;0m", "\x1b[33;0m",
@@ -387,18 +397,127 @@ static int species_in_dex(const Dex *dex, int species, int want_caught)
     return 0;
 }
 
-static void apply_filter(void)
+static int versions_narrowed(const Dex *dex)
+{
+    int i;
+    if (!dex)
+        return 0;
+    for (i = 0; i < dex->save_count; i++) {
+        if (!filter_version[i])
+            return 1;
+    }
+    return 0;
+}
+
+static int version_on(const Dex *dex, int save_index)
+{
+    if (!dex || save_index < 0 || save_index >= dex->save_count)
+        return 0;
+    return filter_version[save_index] != 0;
+}
+
+/* Counts living copies and Pokédex flags on versions that are still enabled. */
+static void measure_species(const Dex *dex, const SpeciesRow *row, int *stored, int *shiny,
+                            int *seen, int *in_dex)
+{
+    int i;
+    *stored = 0;
+    *shiny = 0;
+    *seen = 0;
+    *in_dex = 0;
+    if (!dex || !row)
+        return;
+    for (i = 0; i < row->count; i++) {
+        const MonRef *mon = &dex->mons[row->first + i];
+        if (!version_on(dex, mon->save_index))
+            continue;
+        (*stored)++;
+        if (mon->flags & MON_SHINY)
+            *shiny = 1;
+    }
+    for (i = 0; i < dex->save_count; i++) {
+        if (!filter_version[i])
+            continue;
+        if (dex_bit(dex->saves[i].dex_caught, row->species))
+            *in_dex = 1;
+        if (dex_bit(dex->saves[i].dex_seen, row->species))
+            *seen = 1;
+    }
+}
+
+static int species_from_disabled_only(const Dex *dex, const SpeciesRow *row)
+{
+    int i;
+    int any = 0;
+    int enabled = 0;
+    if (!versions_narrowed(dex))
+        return 0;
+    for (i = 0; i < row->count; i++) {
+        const MonRef *mon = &dex->mons[row->first + i];
+        any = 1;
+        if (version_on(dex, mon->save_index))
+            enabled = 1;
+    }
+    for (i = 0; i < dex->save_count && !enabled; i++) {
+        int got = dex_bit(dex->saves[i].dex_caught, row->species);
+        int saw = dex_bit(dex->saves[i].dex_seen, row->species);
+        if (!got && !saw)
+            continue;
+        any = 1;
+        if (filter_version[i])
+            enabled = 1;
+    }
+    return any && !enabled;
+}
+
+static void apply_filter(const Dex *dex)
 {
     int i;
     int n = 0;
     for (i = 0; i < NATIONAL_DEX; i++) {
-        if (filter_caught && catalog[i].count == 0)
+        int stored;
+        int shiny;
+        int seen;
+        int in_dex;
+        measure_species(dex, &catalog[i], &stored, &shiny, &seen, &in_dex);
+        if (filter_caught && stored == 0)
             continue;
-        if (filter_dex && !catalog[i].dex_seen)
+        if (filter_seen && !seen)
+            continue;
+        if (filter_dex && !in_dex)
+            continue;
+        if (filter_shiny && !shiny)
+            continue;
+        if (species_from_disabled_only(dex, &catalog[i]))
             continue;
         rows[n++] = catalog[i];
     }
     row_count = n;
+}
+
+static int enabled_stored(const Dex *dex, const SpeciesRow *row)
+{
+    int stored;
+    int shiny;
+    int seen;
+    int in_dex;
+    measure_species(dex, row, &stored, &shiny, &seen, &in_dex);
+    return stored;
+}
+
+static const MonRef *enabled_mon(const Dex *dex, const SpeciesRow *row, int nth)
+{
+    int i;
+    int n = 0;
+    for (i = 0; i < row->count; i++) {
+        const MonRef *mon = &dex->mons[row->first + i];
+        if (!version_on(dex, mon->save_index))
+            continue;
+        if (n == nth)
+            return mon;
+        n++;
+    }
+    return NULL;
 }
 
 static void refresh_rows(const Dex *dex)
@@ -425,7 +544,7 @@ static void refresh_rows(const Dex *dex)
         if (count > 0)
             caught++;
     }
-    apply_filter();
+    apply_filter(dex);
 }
 
 static void clamp_cursor(int *cursor, int *scroll, int count, int page)
@@ -480,11 +599,16 @@ static void select_species(uint16_t species)
 static const MonRef *best_mon(const Dex *dex, const SpeciesRow *row)
 {
     const MonRef *best = NULL;
+    const MonRef *fallback = NULL;
     int i;
     for (i = 0; i < row->count; i++) {
         const MonRef *mon = &dex->mons[row->first + i];
         int shiny;
         int best_shiny;
+        if (!version_on(dex, mon->save_index))
+            continue;
+        if (!fallback)
+            fallback = mon;
         if (mon->flags & MON_EGG)
             continue;
         shiny = (mon->flags & MON_SHINY) != 0;
@@ -493,24 +617,31 @@ static const MonRef *best_mon(const Dex *dex, const SpeciesRow *row)
             best = mon;
     }
     if (!best)
-        best = &dex->mons[row->first];
+        best = fallback;
     return best;
 }
 
-static void draw_dex_row(int row, const SpeciesRow *entry, int selected)
+static void draw_dex_row(const Dex *dex, int row, const SpeciesRow *entry, int selected)
 {
     char num[8];
-    char qty[8];
-    int owned = entry->count > 0;
-    int ink = selected ? INK_GOLD : INK_MUTED;
-    int name_ink = selected ? INK_GOLD : (owned ? INK_CREAM : INK_MUTED);
+    char qty[16];
+    int stored;
+    int seen;
+    int in_dex;
+    int ignore;
+    int ink;
+    int name_ink;
+    measure_species(dex, entry, &stored, &ignore, &seen, &in_dex);
+    (void)ignore;
+    ink = selected ? INK_GOLD : INK_MUTED;
+    name_ink = selected ? INK_GOLD : (stored > 0 ? INK_CREAM : INK_MUTED);
     qty[0] = 0;
     snprintf(num, sizeof num, "#%03u", entry->species);
-    if (owned)
-        snprintf(qty, sizeof qty, "x%u", (unsigned)entry->count);
-    else if (entry->dex_caught)
+    if (stored > 0)
+        snprintf(qty, sizeof qty, "x%u", (unsigned)stored);
+    else if (in_dex)
         snprintf(qty, sizeof qty, "Dex");
-    else if (entry->dex_seen)
+    else if (seen)
         snprintf(qty, sizeof qty, "Seen");
     else
         snprintf(qty, sizeof qty, "-");
@@ -544,19 +675,31 @@ static void draw_copy_row(const MonRef *mon, int row, int selected)
     emit(ink, where, 8);
 }
 
+static const char *list_heading(const Dex *dex)
+{
+    int n = (filter_caught ? 1 : 0) + (filter_seen ? 1 : 0) + (filter_dex ? 1 : 0)
+        + (filter_shiny ? 1 : 0) + (versions_narrowed(dex) ? 1 : 0);
+    if (n == 0)
+        return "Pokedex";
+    if (n > 1)
+        return "Filtered";
+    if (filter_caught)
+        return "Caught";
+    if (filter_seen)
+        return "Seen";
+    if (filter_dex)
+        return "In Dex";
+    if (filter_shiny)
+        return "Shiny";
+    return "Versions";
+}
+
 static void draw_dex_list(const Dex *dex)
 {
     char right[12];
-    const char *heading = "Pokedex";
+    const char *heading = list_heading(dex);
     int i;
     int last;
-    (void)dex;
-    if (filter_caught && filter_dex)
-        heading = "Caught + Dex";
-    else if (filter_caught)
-        heading = "Caught";
-    else if (filter_dex)
-        heading = "In Pokedex";
     snprintf(right, sizeof right, "%d/%d", caught, NATIONAL_DEX);
     title_row(0, heading, right);
     rule_row(1);
@@ -570,24 +713,28 @@ static void draw_dex_list(const Dex *dex)
     if (last > row_count)
         last = row_count;
     for (i = dex_scroll; i < last; i++)
-        draw_dex_row(2 + (i - dex_scroll), &rows[i], i == dex_cursor);
+        draw_dex_row(dex, 2 + (i - dex_scroll), &rows[i], i == dex_cursor);
 }
 
 static void draw_copy_list(const Dex *dex, const SpeciesRow *row)
 {
     char left[32];
     char right[24];
+    int total = enabled_stored(dex, row);
     int i;
     int last;
     snprintf(left, sizeof left, "#%03u %s", row->species, species_name(row->species));
-    snprintf(right, sizeof right, "%d/%u", copy_cursor + 1, (unsigned)row->count);
+    snprintf(right, sizeof right, "%d/%d", total > 0 ? copy_cursor + 1 : 0, total);
     title_row(0, left, right);
     rule_row(1);
     last = copy_scroll + COPY_PAGE;
-    if (last > row->count)
-        last = row->count;
-    for (i = copy_scroll; i < last; i++)
-        draw_copy_row(&dex->mons[row->first + i], 2 + (i - copy_scroll), i == copy_cursor);
+    if (last > total)
+        last = total;
+    for (i = copy_scroll; i < last; i++) {
+        const MonRef *mon = enabled_mon(dex, row, i);
+        if (mon)
+            draw_copy_row(mon, 2 + (i - copy_scroll), i == copy_cursor);
+    }
 }
 
 /* Lists which saves have this species registered. Stops before the hint rows. */
@@ -606,7 +753,7 @@ static int draw_pokedex_lines(const Dex *dex, const SpeciesRow *row, int line)
         int got = dex_bit(dex->saves[i].dex_caught, row->species);
         int seen = dex_bit(dex->saves[i].dex_seen, row->species);
         char buf[40];
-        if (!got && !seen)
+        if (!filter_version[i] || (!got && !seen))
             continue;
         if (line > 17) {
             hidden++;
@@ -633,7 +780,12 @@ static int draw_pokedex_lines(const Dex *dex, const SpeciesRow *row, int line)
 static void draw_missing_card(const Dex *dex, const SpeciesRow *row)
 {
     unsigned type = species_type(row->species, 0);
+    int seen;
+    int in_dex;
+    int ignore;
     int line = 3;
+    measure_species(dex, row, &ignore, &ignore, &seen, &in_dex);
+    (void)ignore;
 
     at(0, 0);
     use_ink(INK_GOLD);
@@ -647,9 +799,9 @@ static void draw_missing_card(const Dex *dex, const SpeciesRow *row)
 
     at(line++, 0);
     use_ink(INK_MUTED);
-    if (row->dex_caught)
+    if (in_dex)
         fputs("Caught, not stored", stdout);
-    else if (row->dex_seen)
+    else if (seen)
         fputs("Seen", stdout);
     else
         fputs("Not caught", stdout);
@@ -669,6 +821,7 @@ static void draw_missing_card(const Dex *dex, const SpeciesRow *row)
 static void draw_species_card(const Dex *dex, const SpeciesRow *row)
 {
     const MonRef *face;
+    int stored = 0;
     int shiny = 0;
     int eggs = 0;
     int i;
@@ -676,14 +829,17 @@ static void draw_species_card(const Dex *dex, const SpeciesRow *row)
     char buf[32];
     unsigned type = species_type(row->species, 0);
 
-    if (row->count == 0) {
+    face = best_mon(dex, row);
+    if (!face) {
         draw_missing_card(dex, row);
         return;
     }
-    face = best_mon(dex, row);
 
     for (i = 0; i < row->count; i++) {
         const MonRef *mon = &dex->mons[row->first + i];
+        if (!version_on(dex, mon->save_index))
+            continue;
+        stored++;
         if (mon->flags & MON_SHINY)
             shiny++;
         if (mon->flags & MON_EGG)
@@ -699,7 +855,7 @@ static void draw_species_card(const Dex *dex, const SpeciesRow *row)
     at(1, 0);
     use_ink(type_ink(type));
     fputs(type_name(type), stdout);
-    snprintf(buf, sizeof buf, "x%u", (unsigned)row->count);
+    snprintf(buf, sizeof buf, "x%d", stored);
     at(1, COLS - text_len(buf));
     use_ink(INK_GOLD);
     fputs(buf, stdout);
@@ -863,42 +1019,157 @@ static void draw_copy_card(const Dex *dex, const MonRef *mon)
     sprites_show(mon->species, (mon->flags & MON_SHINY) != 0, egg);
 }
 
-static void draw_filter(void)
+static int filter_items(const Dex *dex)
 {
-    title_row(0, "Filter", "");
-    rule_row(1);
-    at(3, 0);
-    emit(filter_cursor == 0 ? INK_GOLD : INK_CREAM, filter_cursor == 0 ? ">" : "", 2);
-    emit(filter_cursor == 0 ? INK_GOLD : INK_CREAM, "Caught", 16);
-    emit(filter_caught ? INK_GOLD : INK_MUTED, filter_caught ? "On" : "Off", 4);
-    at(4, 0);
-    emit(filter_cursor == 1 ? INK_GOLD : INK_CREAM, filter_cursor == 1 ? ">" : "", 2);
-    emit(filter_cursor == 1 ? INK_GOLD : INK_CREAM, "In Pokedex", 16);
-    emit(filter_dex ? INK_GOLD : INK_MUTED, filter_dex ? "On" : "Off", 4);
-    at(7, 0);
-    use_ink(INK_MUTED);
-    if (filter_cursor == 0)
-        fputs("Stored in a save.", stdout);
-    else
-        fputs("Registered in a dex.", stdout);
-    at(9, 0);
-    fputs("Every On must match.", stdout);
+    return FILTER_RULES + dex->save_count;
 }
 
-static void draw_controls(void)
+/* Versions sit under a header line, so their screen line is one past the item index. */
+static int filter_line_of(const Dex *dex, int item)
+{
+    if (dex->save_count > 0 && item >= FILTER_RULES)
+        return item + 1;
+    return item;
+}
+
+static void clamp_filter(const Dex *dex)
+{
+    int count = filter_items(dex);
+    int line;
+    if (count < 1)
+        count = 1;
+    if (filter_cursor < 0)
+        filter_cursor = 0;
+    if (filter_cursor >= count)
+        filter_cursor = count - 1;
+    line = filter_line_of(dex, filter_cursor);
+    if (line < filter_scroll)
+        filter_scroll = line;
+    if (line >= filter_scroll + FILTER_PAGE)
+        filter_scroll = line - FILTER_PAGE + 1;
+    if (filter_scroll < 0)
+        filter_scroll = 0;
+}
+
+static void toggle_filter(int item)
+{
+    if (item == FILTER_CAUGHT)
+        filter_caught = !filter_caught;
+    else if (item == FILTER_SEEN)
+        filter_seen = !filter_seen;
+    else if (item == FILTER_DEX)
+        filter_dex = !filter_dex;
+    else if (item == FILTER_SHINY)
+        filter_shiny = !filter_shiny;
+    else if (item >= FILTER_RULES && item - FILTER_RULES < MAX_SAVES)
+        filter_version[item - FILTER_RULES] = !filter_version[item - FILTER_RULES];
+}
+
+static void draw_filter_row(const Dex *dex, int screen_row, int item)
+{
+    int selected = item == filter_cursor;
+    int ink = selected ? INK_GOLD : INK_CREAM;
+    int on = 0;
+    const char *label = "";
+    if (item == FILTER_CAUGHT) {
+        label = "Caught";
+        on = filter_caught;
+    } else if (item == FILTER_SEEN) {
+        label = "Seen";
+        on = filter_seen;
+    } else if (item == FILTER_DEX) {
+        label = "In Dex";
+        on = filter_dex;
+    } else if (item == FILTER_SHINY) {
+        label = "Shiny";
+        on = filter_shiny;
+    }
+    at(screen_row, 0);
+    emit(ink, selected ? ">" : "", 2);
+    if (item < FILTER_RULES) {
+        emit(ink, label, 22);
+    } else {
+        const SaveInfo *info = &dex->saves[item - FILTER_RULES];
+        on = filter_version[item - FILTER_RULES];
+        emit(ink, info->game, 6);
+        emit(ink, info->name[0] ? info->name : info->game, 16);
+    }
+    emit_right(on ? INK_GOLD : INK_MUTED, on ? "On" : "Off", 6);
+}
+
+static void draw_filter(const Dex *dex)
+{
+    int lines = filter_items(dex);
+    int line;
+    int last;
+    if (dex->save_count > 0)
+        lines++;
+    title_row(0, "Filter", "");
+    rule_row(1);
+    last = filter_scroll + FILTER_PAGE;
+    if (last > lines)
+        last = lines;
+    for (line = filter_scroll; line < last; line++) {
+        int screen = 2 + (line - filter_scroll);
+        int item = line;
+        if (dex->save_count > 0 && line == FILTER_RULES) {
+            at(screen, 0);
+            use_ink(INK_MUTED);
+            fputs("Versions", stdout);
+            continue;
+        }
+        if (dex->save_count > 0 && line > FILTER_RULES)
+            item = line - 1;
+        draw_filter_row(dex, screen, item);
+    }
+}
+
+/* Bottom screen while filtering: only the sentence for the highlighted rule. */
+static void draw_filter_note(const Dex *dex)
+{
+    int item = filter_cursor;
+    if (item < 0 || item >= filter_items(dex))
+        return;
+    if (item == FILTER_CAUGHT) {
+        at(9, 0);
+        use_ink(INK_CREAM);
+        fputs("Stored in a box or the party.", stdout);
+    } else if (item == FILTER_SEEN) {
+        at(9, 0);
+        use_ink(INK_CREAM);
+        fputs("Seen in a Pokedex.", stdout);
+    } else if (item == FILTER_DEX) {
+        at(9, 0);
+        use_ink(INK_CREAM);
+        fputs("Caught in a Pokedex.", stdout);
+    } else if (item == FILTER_SHINY) {
+        at(9, 0);
+        use_ink(INK_CREAM);
+        fputs("A shiny copy is stored.", stdout);
+    } else {
+        const SaveInfo *info = &dex->saves[item - FILTER_RULES];
+        at(8, 0);
+        use_ink(INK_CREAM);
+        fputs("Include Pokemon from", stdout);
+        at(10, 0);
+        use_ink(INK_GOLD);
+        emit(INK_GOLD, info->name[0] ? info->name : info->game, COLS);
+        if (info->game[0]) {
+            at(11, 0);
+            use_ink(INK_MUTED);
+            fputs(info->game, stdout);
+        }
+    }
+}
+
+static void draw_controls(const Dex *dex)
 {
     int owned = view == VIEW_DEX && dex_cursor >= 0 && dex_cursor < row_count
-        && rows[dex_cursor].count > 0;
-    if (view == VIEW_COPIES)
+        && enabled_stored(dex, &rows[dex_cursor]) > 0;
+    if (view != VIEW_DEX)
         return;
     at(19, 0);
     use_ink(INK_MUTED);
-    if (view == VIEW_FILTER) {
-        fputs("A toggle", stdout);
-        at(20, 0);
-        fputs("B close", stdout);
-        return;
-    }
     fputs("D-pad scroll    L/R page", stdout);
     at(20, 0);
     if (owned)
@@ -911,18 +1182,23 @@ static void draw_controls(void)
 
 static void draw(const Dex *dex)
 {
-    if (view == VIEW_COPIES && (dex_cursor < 0 || dex_cursor >= row_count || rows[dex_cursor].count == 0))
+    int copies = 0;
+    if (view == VIEW_COPIES && dex_cursor >= 0 && dex_cursor < row_count)
+        copies = enabled_stored(dex, &rows[dex_cursor]);
+    if (view == VIEW_COPIES && copies <= 0)
         view = VIEW_DEX;
     if (view == VIEW_COPIES)
-        clamp_cursor(&copy_cursor, &copy_scroll, rows[dex_cursor].count, COPY_PAGE);
-    else if (view == VIEW_DEX)
+        clamp_cursor(&copy_cursor, &copy_scroll, copies, COPY_PAGE);
+    else if (view == VIEW_FILTER)
+        clamp_filter(dex);
+    else
         clamp_cursor(&dex_cursor, &dex_scroll, row_count, DEX_PAGE);
 
     consoleSelect(&top_console);
     consoleClear();
     use_ink(INK_CREAM);
     if (view == VIEW_FILTER)
-        draw_filter();
+        draw_filter(dex);
     else if (view == VIEW_COPIES)
         draw_copy_list(dex, &rows[dex_cursor]);
     else
@@ -931,9 +1207,16 @@ static void draw(const Dex *dex)
     consoleSelect(&bottom_console);
     consoleClear();
     use_ink(INK_CREAM);
+    if (view == VIEW_FILTER) {
+        draw_filter_note(dex);
+        sprites_hide();
+        return;
+    }
     if (view == VIEW_COPIES) {
         const SpeciesRow *row = &rows[dex_cursor];
-        draw_copy_card(dex, &dex->mons[row->first + copy_cursor]);
+        const MonRef *mon = enabled_mon(dex, row, copy_cursor);
+        if (mon)
+            draw_copy_card(dex, mon);
     } else if (row_count > 0) {
         draw_species_card(dex, &rows[dex_cursor]);
     }
@@ -942,7 +1225,7 @@ static void draw(const Dex *dex)
         use_ink(INK_MUTED);
         fputs("List full.", stdout);
     }
-    draw_controls();
+    draw_controls(dex);
 }
 
 void ui_status(const char *msg)
@@ -966,7 +1249,16 @@ void ui_status(const char *msg)
 
 void ui_run(Dex *dex)
 {
+    int i;
     keysSetRepeat(16, 5);
+    for (i = 0; i < MAX_SAVES; i++)
+        filter_version[i] = 1;
+    filter_caught = 0;
+    filter_seen = 0;
+    filter_dex = 0;
+    filter_shiny = 0;
+    filter_cursor = 0;
+    filter_scroll = 0;
     dex_sort(dex, 1);
     refresh_rows(dex);
     view = VIEW_DEX;
@@ -974,9 +1266,6 @@ void ui_run(Dex *dex)
     dex_scroll = 0;
     copy_cursor = 0;
     copy_scroll = 0;
-    filter_caught = 0;
-    filter_dex = 0;
-    filter_cursor = 0;
     clamp_cursor(&dex_cursor, &dex_scroll, row_count, DEX_PAGE);
     draw(dex);
 
@@ -1002,7 +1291,7 @@ void ui_run(Dex *dex)
                     keep = 1;
                 }
                 view = VIEW_DEX;
-                apply_filter();
+                apply_filter(dex);
                 if (keep)
                     select_species(species);
                 else
@@ -1010,22 +1299,13 @@ void ui_run(Dex *dex)
                 music_click();
                 dirty = 1;
             } else if (hit & KEY_A) {
-                if (filter_cursor == 0)
-                    filter_caught = !filter_caught;
-                else
-                    filter_dex = !filter_dex;
+                toggle_filter(filter_cursor);
                 music_click();
                 dirty = 1;
-            } else if (down & (KEY_UP | KEY_DOWN)) {
+            } else if (down & (KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT | KEY_L | KEY_R)) {
                 int before = filter_cursor;
-                if (down & KEY_UP)
-                    filter_cursor--;
-                if (down & KEY_DOWN)
-                    filter_cursor++;
-                if (filter_cursor < 0)
-                    filter_cursor = 0;
-                if (filter_cursor > 1)
-                    filter_cursor = 1;
+                nudge(&filter_cursor, filter_items(dex), FILTER_PAGE, down);
+                clamp_filter(dex);
                 if (filter_cursor != before) {
                     music_click();
                     dirty = 1;
@@ -1039,7 +1319,8 @@ void ui_run(Dex *dex)
             view = VIEW_DEX;
             music_click();
             dirty = 1;
-        } else if (hit & KEY_A && view == VIEW_DEX && row_count > 0 && rows[dex_cursor].count > 0) {
+        } else if (hit & KEY_A && view == VIEW_DEX && row_count > 0
+                   && enabled_stored(dex, &rows[dex_cursor]) > 0) {
             view = VIEW_COPIES;
             copy_cursor = 0;
             copy_scroll = 0;
@@ -1049,9 +1330,10 @@ void ui_run(Dex *dex)
             int before;
             int after;
             if (view == VIEW_COPIES) {
+                int total = enabled_stored(dex, &rows[dex_cursor]);
                 before = copy_cursor;
-                nudge(&copy_cursor, rows[dex_cursor].count, COPY_PAGE, down);
-                clamp_cursor(&copy_cursor, &copy_scroll, rows[dex_cursor].count, COPY_PAGE);
+                nudge(&copy_cursor, total, COPY_PAGE, down);
+                clamp_cursor(&copy_cursor, &copy_scroll, total, COPY_PAGE);
                 after = copy_cursor;
             } else {
                 before = dex_cursor;
