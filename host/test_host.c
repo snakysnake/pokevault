@@ -1,0 +1,336 @@
+#include "crypto.h"
+#include "save.h"
+#include "species.h"
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+static int fails;
+
+#define CHECK(cond)                                                                 \
+    do {                                                                            \
+        if (!(cond)) {                                                              \
+            printf("fail %s:%d  %s\n", __FILE__, __LINE__, #cond);                  \
+            fails++;                                                                \
+        }                                                                           \
+    } while (0)
+
+static void fill_pk45(uint8_t *pk, int len, uint32_t pid, uint16_t species, uint32_t exp,
+                      uint16_t tid, uint16_t sid, int egg, int party_level)
+{
+    memset(pk, 0, (size_t)len);
+    pv_write32(pk, pid);
+    pv_write16(pk + 8, species);
+    pv_write16(pk + 0x0C, tid);
+    pv_write16(pk + 0x0E, sid);
+    pv_write32(pk + 0x10, exp);
+    if (egg)
+        pv_write32(pk + 0x38, 1u << 30);
+    if (len > 0x8C)
+        pk[0x8C] = (uint8_t)party_level;
+    pv_refresh_checksum45(pk);
+    pv_encrypt45(pk, len);
+}
+
+static void fill_pk3(uint8_t *pk, int len, uint32_t pid, uint16_t species, uint32_t exp,
+                     uint16_t tid, uint16_t sid, int party_level)
+{
+    memset(pk, 0, (size_t)len);
+    pv_write32(pk, pid);
+    pv_write16(pk + 4, tid);
+    pv_write16(pk + 6, sid);
+    pv_write16(pk + 0x20, species);
+    pv_write32(pk + 0x24, exp);
+    if (len > 0x54)
+        pk[0x54] = (uint8_t)party_level;
+    pv_refresh_checksum3(pk);
+    pv_encrypt3(pk);
+}
+
+static void mark_gen4(uint8_t *data, int general_size, int storage_start, int storage_size)
+{
+    pv_write32(data + general_size - 0x0C, (uint32_t)general_size);
+    pv_write32(data + general_size - 0x08, 0x20060623u);
+    pv_write32(data + general_size - 0x14, 4);
+    pv_write32(data + storage_start + storage_size - 0x14, 4);
+}
+
+static void seal_gen5(uint8_t *base, int main_size, int info_len, int mirror, uint32_t counter)
+{
+    uint16_t party = pv_crc16_ccitt(base + 0x18E00, 0x534);
+    uint8_t *footer = base + main_size - 0x100;
+    uint16_t foot;
+    pv_write16(base + 0x19336, party);
+    pv_write16(base + mirror, party);
+    foot = pv_crc16_ccitt(footer, (size_t)info_len);
+    pv_write16(footer + info_len + 0x0E, foot);
+    pv_write32(footer + info_len, counter);
+}
+
+static const MonRef *find_species(const Dex *dex, uint16_t species)
+{
+    int i;
+    for (i = 0; i < dex->mon_count; i++) {
+        if (dex->mons[i].species == species)
+            return &dex->mons[i];
+    }
+    return NULL;
+}
+
+static void test_exp(void)
+{
+    CHECK(pv_level_from_exp(0, 0) == 1);
+    CHECK(pv_level_from_exp(8, 0) == 2);
+    CHECK(pv_level_from_exp(999, 0) == 9);
+    CHECK(pv_level_from_exp(1000, 0) == 10);
+    CHECK(pv_level_from_exp(1000000, 0) == 100);
+    CHECK(pv_level_from_exp(800000, 4) == 100);
+    CHECK(pv_level_from_exp(1250000, 5) == 100);
+    CHECK(pv_level_from_exp(1059860, 3) == 100);
+    CHECK(pv_level_from_exp(600000, 1) == 100);
+    CHECK(pv_level_from_exp(1640000, 2) == 100);
+    CHECK(pv_level_from_exp(15, 1) == 2);
+    CHECK(pv_level_from_exp(4, 2) == 2);
+    CHECK(pv_level_from_exp(9, 3) == 2);
+    CHECK(pv_level_from_exp(6, 4) == 2);
+    CHECK(pv_level_from_exp(10, 5) == 2);
+    CHECK(pv_level_from_exp(125000, 1) == 50);
+}
+
+static void test_roundtrip(void)
+{
+    uint8_t pk[236];
+    uint8_t g3[100];
+    const uint32_t pid = 8u << 13;
+
+    fill_pk45(pk, 236, pid, 25, 1000, 1, 0, 0, 50);
+    CHECK(pv_decrypt45(pk, 236));
+    CHECK(pv_read16(pk + 8) == 25);
+    CHECK(pk[0x8C] == 50);
+    CHECK(pv_is_shiny(pv_read32(pk), pv_read16(pk + 0x0C), pv_read16(pk + 0x0E)));
+
+    fill_pk3(g3, 100, 0x12345678u, 1, 1000, 0x1111, 0x2222, 7);
+    CHECK(pv_decrypt3(g3));
+    CHECK(pv_read16(g3 + 0x20) == 1);
+    CHECK(g3[0x54] == 7);
+}
+
+static void test_species(void)
+{
+    CHECK(strcmp(species_name(1), "Bulbasaur") == 0);
+    CHECK(strcmp(species_name(25), "Pikachu") == 0);
+    CHECK(strcmp(species_name(29), "Nidoran-F") == 0);
+    CHECK(strcmp(species_name(32), "Nidoran-M") == 0);
+    CHECK(strcmp(species_name(649), "Genesect") == 0);
+    CHECK(species_growth(1) == 3);
+    CHECK(species_growth(25) == 0);
+    CHECK(species_growth(129) == 5);
+    CHECK(species_growth(493) == 5);
+    CHECK(species_growth(649) == 5);
+}
+
+static void test_dp(Dex *dex)
+{
+    uint8_t *sav = calloc(1, 0x80000);
+    uint8_t party[236];
+    uint8_t box[136];
+    const MonRef *mon;
+    const MonRef *boxed;
+
+    CHECK(sav != NULL);
+    mark_gen4(sav, 0xC100, 0xC100, 0x121E0);
+    fill_pk45(party, 236, 8u << 13, 25, 1000, 1, 0, 0, 50);
+    fill_pk45(box, 136, 0xABCDu, 6, 1000, 2, 2, 1, 0);
+    sav[0x94] = 1;
+    memcpy(sav + 0x98, party, sizeof party);
+    memcpy(sav + 0xC100 + 4, box, sizeof box);
+
+    dex_clear(dex);
+    CHECK(save_read(dex, "Diamond", sav, 0x80000));
+    CHECK(dex->save_count == 1);
+    CHECK(strcmp(dex->saves[0].game, "D/P") == 0);
+    CHECK(dex->mon_count == 2);
+    mon = find_species(dex, 25);
+    boxed = find_species(dex, 6);
+    CHECK(mon && mon->level == 50 && (mon->flags & MON_PARTY) && (mon->flags & MON_SHINY));
+    CHECK(boxed && boxed->level == 12 && (boxed->flags & MON_EGG) && boxed->box == 0);
+    free(sav);
+}
+
+static void test_pt_party_offset(Dex *dex)
+{
+    uint8_t *sav = calloc(1, 0x80000);
+    uint8_t party[236];
+
+    mark_gen4(sav, 0xCF2C, 0xCF2C, 0x121E4);
+    fill_pk45(party, 236, 1, 133, 800000, 5, 5, 0, 36);
+    sav[0x9C] = 1;
+    memcpy(sav + 0xA0, party, sizeof party);
+    dex_clear(dex);
+    CHECK(save_read(dex, "Platinum", sav, 0x80000));
+    CHECK(dex->mon_count == 1);
+    CHECK(strcmp(dex->saves[0].game, "Pt") == 0);
+    CHECK(dex->mons[0].species == 133);
+    CHECK(dex->mons[0].level == 36);
+    CHECK(dex->mons[0].flags & MON_PARTY);
+    free(sav);
+}
+
+static void test_hgss_box_stride(Dex *dex)
+{
+    uint8_t *sav = calloc(1, 0x80000);
+    uint8_t box[136];
+
+    mark_gen4(sav, 0xF628, 0xF700, 0x12310);
+    fill_pk45(box, 136, 3, 25, 125000, 1, 1, 0, 0);
+    memcpy(sav + 0xF700 + 0x1000, box, sizeof box);
+    dex_clear(dex);
+    CHECK(save_read(dex, "HeartGold", sav, 0x80000));
+    CHECK(dex->mon_count == 1);
+    CHECK(strcmp(dex->saves[0].game, "HG/SS") == 0);
+    CHECK(dex->mons[0].species == 25);
+    CHECK(dex->mons[0].box == 1);
+    CHECK(dex->mons[0].slot == 0);
+    CHECK(dex->mons[0].level == 50);
+    free(sav);
+}
+
+static void test_bw_picks_newer_copy(Dex *dex)
+{
+    uint8_t *sav = calloc(1, 0x80000);
+    uint8_t older[220];
+    uint8_t newer[220];
+
+    fill_pk45(older, 220, 4, 25, 1000, 1, 1, 0, 12);
+    fill_pk45(newer, 220, 9, 133, 1000, 1, 1, 0, 20);
+    sav[0x18E04] = 1;
+    memcpy(sav + 0x18E08, older, sizeof older);
+    seal_gen5(sav, 0x24000, 0x8C, 0x23F34, 1);
+
+    sav[0x24000 + 0x18E04] = 1;
+    memcpy(sav + 0x24000 + 0x18E08, newer, sizeof newer);
+    seal_gen5(sav + 0x24000, 0x24000, 0x8C, 0x23F34, 9);
+
+    dex_clear(dex);
+    CHECK(save_read(dex, "White", sav, 0x80000));
+    CHECK(dex->mon_count == 1);
+    CHECK(strcmp(dex->saves[0].game, "B/W") == 0);
+    CHECK(dex->mons[0].species == 133);
+    CHECK(dex->mons[0].level == 20);
+    CHECK(dex->mons[0].flags & MON_PARTY);
+    free(sav);
+}
+
+static void test_gen3(Dex *dex)
+{
+    uint8_t *sav = calloc(1, 0x20000);
+    uint8_t party[100];
+    uint8_t box[80];
+    int i;
+
+    fill_pk3(party, 100, 0x01020304u, 1, 1000, 0x10, 0x20, 16);
+    fill_pk3(box, 80, 0x22222222u, 4, 1059860, 0x10, 0x20, 0);
+    memcpy(sav + 0x1000 + 0x238, party, sizeof party);
+    sav[0x1000 + 0x234] = 1;
+    /* Section 5 is the first storage section. Box data starts 4 bytes in. */
+    memcpy(sav + 5 * 0x1000 + 4, box, sizeof box);
+
+    for (i = 0; i < 14; i++) {
+        pv_write16(sav + i * 0x1000 + 0xFF4, (uint16_t)i);
+        pv_write32(sav + i * 0x1000 + 0xFFC, 3);
+        pv_write16(sav + i * 0x1000 + 0xFF6, pv_checksum32(sav + i * 0x1000, 0xF80));
+    }
+    for (i = 0; i < 14; i++) {
+        int ofs = 0xE000 + i * 0x1000;
+        pv_write16(sav + ofs + 0xFF4, (uint16_t)i);
+        pv_write32(sav + ofs + 0xFFC, 1);
+        pv_write16(sav + ofs + 0xFF6, pv_checksum32(sav + ofs, 0xF80));
+    }
+
+    dex_clear(dex);
+    CHECK(save_read(dex, "Emerald", sav, 0x20000));
+    CHECK(dex->mon_count == 2);
+    CHECK(strcmp(dex->saves[0].game, "R/S") == 0);
+    CHECK(find_species(dex, 1) && find_species(dex, 1)->level == 16);
+    CHECK(find_species(dex, 1)->flags & MON_PARTY);
+    CHECK(find_species(dex, 4) && find_species(dex, 4)->level == 100);
+    CHECK(find_species(dex, 4)->box == 0);
+    free(sav);
+}
+
+static void test_b2w2(Dex *dex)
+{
+    uint8_t *sav = calloc(1, 0x80000);
+    uint8_t party[220];
+
+    fill_pk45(party, 220, 11, 494, 1250000, 3, 3, 0, 70);
+    sav[0x18E04] = 1;
+    memcpy(sav + 0x18E08, party, sizeof party);
+    seal_gen5(sav, 0x26000, 0x94, 0x25F34, 2);
+
+    dex_clear(dex);
+    CHECK(save_read(dex, "Black 2", sav, 0x80000));
+    CHECK(dex->mon_count == 1);
+    CHECK(strcmp(dex->saves[0].game, "B2/W2") == 0);
+    CHECK(dex->mons[0].species == 494);
+    CHECK(dex->mons[0].level == 70);
+    free(sav);
+}
+
+static void test_frlg(Dex *dex)
+{
+    uint8_t *sav = calloc(1, 0x20000);
+    uint8_t party[100];
+    int i;
+
+    fill_pk3(party, 100, 0x33333333u, 150, 1000, 1, 1, 22);
+    pv_write32(sav + 0xAC, 1);
+    sav[0x1000 + 0x034] = 1;
+    memcpy(sav + 0x1000 + 0x038, party, sizeof party);
+    for (i = 0; i < 14; i++) {
+        pv_write16(sav + i * 0x1000 + 0xFF4, (uint16_t)i);
+        pv_write32(sav + i * 0x1000 + 0xFFC, 2);
+        pv_write16(sav + i * 0x1000 + 0xFF6, pv_checksum32(sav + i * 0x1000, 0xF80));
+    }
+
+    dex_clear(dex);
+    CHECK(save_read(dex, "LeafGreen", sav, 0x20000));
+    CHECK(dex->mon_count == 1);
+    CHECK(strcmp(dex->saves[0].game, "FR/LG") == 0);
+    CHECK(dex->mons[0].species == 150);
+    CHECK(dex->mons[0].level == 22);
+    CHECK(dex->mons[0].flags & MON_PARTY);
+    free(sav);
+}
+
+static void test_rejects_garbage(Dex *dex)
+{
+    uint8_t junk[128];
+    memset(junk, 0xAB, sizeof junk);
+    dex_clear(dex);
+    CHECK(!save_read(dex, "nope", junk, sizeof junk));
+    CHECK(dex->mon_count == 0);
+}
+
+int main(void)
+{
+    static Dex dex;
+    test_exp();
+    test_roundtrip();
+    test_species();
+    test_dp(&dex);
+    test_pt_party_offset(&dex);
+    test_hgss_box_stride(&dex);
+    test_bw_picks_newer_copy(&dex);
+    test_b2w2(&dex);
+    test_gen3(&dex);
+    test_frlg(&dex);
+    test_rejects_garbage(&dex);
+    if (fails) {
+        printf("%d checks failed\n", fails);
+        return 1;
+    }
+    printf("all checks passed\n");
+    return 0;
+}
