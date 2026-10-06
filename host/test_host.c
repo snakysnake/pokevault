@@ -620,6 +620,43 @@ static void test_types(void)
     CHECK(move_type(9999) == TYPE_COUNT);
 }
 
+static void test_tidy_name(void)
+{
+    char name[80];
+
+    strcpy(name, "Pokemon - Silberne Edition");
+    dex_tidy_name(name);
+    CHECK(strcmp(name, "Silberne Edition") == 0);
+
+    strcpy(name, "Pok\xC3\xA9mon \xE2\x80\x93 HeartGold");
+    dex_tidy_name(name);
+    CHECK(strcmp(name, "HeartGold") == 0);
+
+    strcpy(name, "POKEMON_-_Perl-Edition");
+    dex_tidy_name(name);
+    CHECK(strcmp(name, "Perl-Edition") == 0);
+
+    strcpy(name, "[Pokemon] - Blattgrune Edition");
+    dex_tidy_name(name);
+    CHECK(strcmp(name, "Blattgrune Edition") == 0);
+
+    strcpy(name, "Pokemon(TM) - Platin-Edition");
+    dex_tidy_name(name);
+    CHECK(strcmp(name, "Platin-Edition") == 0);
+
+    strcpy(name, "Diamond");
+    dex_tidy_name(name);
+    CHECK(strcmp(name, "Diamond") == 0);
+
+    strcpy(name, "Pokemon");
+    dex_tidy_name(name);
+    CHECK(strcmp(name, "Pokemon") == 0);
+
+    strcpy(name, "Pok\xE9mon - Kristall-Edition");
+    dex_tidy_name(name);
+    CHECK(strcmp(name, "Kristall-Edition") == 0);
+}
+
 static void test_rejects_garbage(Dex *dex)
 {
     uint8_t junk[128];
@@ -646,6 +683,7 @@ int main(void)
     test_rows(&dex);
     test_battle_stats(&dex);
     test_types();
+    test_tidy_name();
     test_rejects_garbage(&dex);
     if (fails) {
         printf("%d checks failed\n", fails);

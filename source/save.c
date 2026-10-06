@@ -81,6 +81,129 @@ int dex_species_rows(const Dex *dex, SpeciesRow *out, int cap)
     return n;
 }
 
+static int lower_ascii(unsigned char c)
+{
+    if (c >= 'A' && c <= 'Z')
+        return c - 'A' + 'a';
+    return c;
+}
+
+/* Bytes of a leading "pokemon", allowing an accented e. 0 when it does not match. */
+static int pokemon_prefix(const char *s)
+{
+    static const char word[] = "pokemon";
+    int i = 0;
+    int j = 0;
+
+    while (word[j]) {
+        unsigned char c = (unsigned char)s[i];
+        if (c == 0)
+            return 0;
+        if (word[j] == 'e') {
+            if (lower_ascii(c) == 'e') {
+                i++;
+                j++;
+                continue;
+            }
+            if (c == 0xC3 && ((unsigned char)s[i + 1] == 0xA9 || (unsigned char)s[i + 1] == 0x89
+                              || (unsigned char)s[i + 1] == 0xA8 || (unsigned char)s[i + 1] == 0x88)) {
+                i += 2;
+                j++;
+                continue;
+            }
+            if (c == 0xE9 || c == 0xC9 || c == 0xE8 || c == 0xC8) {
+                i++;
+                j++;
+                continue;
+            }
+            return 0;
+        }
+        if (lower_ascii(c) != (unsigned char)word[j])
+            return 0;
+        i++;
+        j++;
+    }
+    return i;
+}
+
+/* One separator after the word: space, dash, underscore, trademark, and similar. */
+static int sep_at(const char *s)
+{
+    unsigned char c = (unsigned char)s[0];
+    unsigned char d = (unsigned char)s[1];
+    unsigned char e = (unsigned char)s[2];
+
+    if (c == 0)
+        return 0;
+    if (c == ' ' || c == '\t' || c == '-' || c == '_' || c == ':' || c == '|'
+        || c == '.' || c == '/' || c == '\\' || c == '+' || c == '~' || c == '*'
+        || c == ')' || c == ']'
+        || c == 0x96 || c == 0x97 || c == 0xA0 || c == 0xAD || c == 0xB7)
+        return 1;
+    if (c == '(' && (d == 'T' || d == 't') && (e == 'M' || e == 'm') && s[3] == ')')
+        return 4;
+    if (c == '(' && (d == 'R' || d == 'r') && s[2] == ')')
+        return 3;
+    if (c == 0xC2 && (d == 0xA0 || d == 0xAE || d == 0xB7))
+        return 2;
+    /* en dash, em dash, bullets, and the trademark sign */
+    if (c == 0xE2 && d == 0x80 && e >= 0x90 && e <= 0xBF)
+        return 3;
+    if (c == 0xE2 && d == 0x84 && e == 0xA2)
+        return 3;
+    if (c == 0xE2 && d == 0x88 && e == 0x92)
+        return 3;
+    return 0;
+}
+
+void dex_tidy_name(char *name)
+{
+    const char *s;
+    const char *rest;
+    char *w;
+    int prefix;
+    int n;
+    int gap;
+
+    if (!name || name[0] == 0)
+        return;
+    s = name;
+    while (*s == ' ' || *s == '\t')
+        s++;
+    if ((*s == '[' || *s == '(') && pokemon_prefix(s + 1) > 0)
+        s++;
+    prefix = pokemon_prefix(s);
+    if (prefix == 0)
+        return;
+    rest = s + prefix;
+    n = sep_at(rest);
+    if (n == 0)
+        return;
+    do {
+        rest += n;
+        n = sep_at(rest);
+    } while (n > 0);
+    if (*rest == 0)
+        return;
+
+    w = name;
+    gap = 0;
+    while (*rest) {
+        unsigned char c = (unsigned char)*rest++;
+        if (c == '_')
+            c = ' ';
+        if (c == ' ' || c == '\t') {
+            gap = 1;
+            continue;
+        }
+        if (gap && w != name)
+            *w++ = ' ';
+        gap = 0;
+        *w++ = (char)c;
+    }
+    *w = 0;
+}
+
 static int begin_save(Dex *dex, const char *name, const char *game)
 {
     SaveInfo *info;
@@ -91,6 +214,7 @@ static int begin_save(Dex *dex, const char *name, const char *game)
     memset(info, 0, sizeof *info);
     for (i = 0; i < sizeof info->name - 1 && name && name[i]; i++)
         info->name[i] = name[i];
+    dex_tidy_name(info->name);
     for (i = 0; i < sizeof info->game - 1 && game && game[i]; i++)
         info->game[i] = game[i];
     return dex->save_count++;

@@ -61,7 +61,10 @@ static void display_name(const char *path, char *out, size_t cap)
 {
     const char *base = path;
     const char *p;
+    char full[256];
     size_t n;
+    if (cap == 0)
+        return;
     for (p = path; *p; p++) {
         if (*p == '/')
             base = p + 1;
@@ -69,9 +72,16 @@ static void display_name(const char *path, char *out, size_t cap)
     n = strlen(base);
     if (n >= 4 && is_sav(base))
         n -= 4;
+    if (n >= sizeof full)
+        n = sizeof full - 1;
+    memcpy(full, base, n);
+    full[n] = 0;
+    /* "Pokemon - Silberne Edition" is just "Silberne Edition" on screen. */
+    dex_tidy_name(full);
+    n = strlen(full);
     if (n >= cap)
         n = cap - 1;
-    memcpy(out, base, n);
+    memcpy(out, full, n);
     out[n] = 0;
 }
 
