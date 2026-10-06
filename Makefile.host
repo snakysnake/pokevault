@@ -1,7 +1,7 @@
 # Host checks for decryption and save layout. No DS compiler required.
 CC ?= cc
 CFLAGS := -std=c11 -Wall -Wextra -O1 -g -Iinclude -DHOST_TEST -fsanitize=address,undefined
-SRCS := host/test_host.c source/crypto.c source/save.c source/species.c source/moves.c source/stats.c
+SRCS := host/test_host.c source/crypto.c source/save.c source/species.c source/moves.c source/stats.c source/types.c
 
 .PHONY: test
 test:

@@ -14,8 +14,10 @@
 enum {
     MON_SPRITES = 649,
     MON_SPRITE_BYTES = 512 + 64 * 64,
-    MON_SPRITE_X = 192,
-    MON_SPRITE_Y = 0
+    /* Sits in the right-hand pocket, under the two header rows and
+       clear of the one-tile frame. */
+    MON_SPRITE_X = 184,
+    MON_SPRITE_Y = 24
 };
 
 static u16 *gfx;

@@ -3,6 +3,7 @@
 #include "save.h"
 #include "species.h"
 #include "stats.h"
+#include "types.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -533,6 +534,31 @@ static void test_battle_stats(Dex *dex)
     free(sav);
 }
 
+static void test_types(void)
+{
+    CHECK(strcmp(type_name(TYPE_ELECTRIC), "Electric") == 0);
+    CHECK(strcmp(type_name(TYPE_COUNT), "????") == 0);
+    CHECK(species_type(1, 0) == TYPE_GRASS);
+    CHECK(species_type(4, 0) == TYPE_FIRE);
+    CHECK(species_type(25, 0) == TYPE_ELECTRIC);
+    CHECK(species_type(35, 0) == TYPE_NORMAL);
+    CHECK(species_type(94, 0) == TYPE_GHOST);
+    CHECK(species_type(282, 0) == TYPE_PSYCHIC);
+    CHECK(species_type(351, 0) == TYPE_NORMAL);
+    CHECK(species_type(351, 1) == TYPE_FIRE);
+    CHECK(species_type(351, 2) == TYPE_WATER);
+    CHECK(species_type(351, 3) == TYPE_ICE);
+    CHECK(species_type(493, 0) == TYPE_NORMAL);
+    CHECK(species_type(493, 9) == TYPE_FIRE);
+    CHECK(species_type(493, 16) == TYPE_DARK);
+    CHECK(move_type(33) == TYPE_NORMAL);
+    CHECK(move_type(53) == TYPE_FIRE);
+    CHECK(move_type(85) == TYPE_ELECTRIC);
+    CHECK(move_type(204) == TYPE_NORMAL);
+    CHECK(move_type(0) == TYPE_COUNT);
+    CHECK(move_type(9999) == TYPE_COUNT);
+}
+
 static void test_rejects_garbage(Dex *dex)
 {
     uint8_t junk[128];
@@ -558,6 +584,7 @@ int main(void)
     test_moves(&dex);
     test_rows(&dex);
     test_battle_stats(&dex);
+    test_types();
     test_rejects_garbage(&dex);
     if (fails) {
         printf("%d checks failed\n", fails);

@@ -6,6 +6,7 @@ ui.o: /Users/lucacaspari/Development/pokevault/source/ui.c \
  /Users/lucacaspari/Development/pokevault/include/sprites.h \
  /Users/lucacaspari/Development/pokevault/include/stats.h \
  /Users/lucacaspari/Development/pokevault/include/save.h \
+ /Users/lucacaspari/Development/pokevault/include/types.h \
  /opt/devkitpro/libnds/include/nds.h \
  /opt/devkitpro/calico/include/calico.h \
  /opt/devkitpro/calico/include/calico/types.h \
@@ -118,7 +119,8 @@ ui.o: /Users/lucacaspari/Development/pokevault/source/ui.c \
  /opt/devkitpro/libnds/include/nds/arm9/sprite.h \
  /opt/devkitpro/libnds/include/nds/arm9/trig_lut.h \
  /opt/devkitpro/libnds/include/nds/arm9/video.h \
- /opt/devkitpro/libnds/include/nds/arm9/videoGL.h
+ /opt/devkitpro/libnds/include/nds/arm9/videoGL.h \
+ /Users/lucacaspari/Development/pokevault/source/font.inc
 /Users/lucacaspari/Development/pokevault/include/moves.h:
 /Users/lucacaspari/Development/pokevault/include/music.h:
 /Users/lucacaspari/Development/pokevault/include/save.h:
@@ -126,6 +128,7 @@ ui.o: /Users/lucacaspari/Development/pokevault/source/ui.c \
 /Users/lucacaspari/Development/pokevault/include/sprites.h:
 /Users/lucacaspari/Development/pokevault/include/stats.h:
 /Users/lucacaspari/Development/pokevault/include/save.h:
+/Users/lucacaspari/Development/pokevault/include/types.h:
 /opt/devkitpro/libnds/include/nds.h:
 /opt/devkitpro/calico/include/calico.h:
 /opt/devkitpro/calico/include/calico/types.h:
@@ -239,3 +242,4 @@ ui.o: /Users/lucacaspari/Development/pokevault/source/ui.c \
 /opt/devkitpro/libnds/include/nds/arm9/trig_lut.h:
 /opt/devkitpro/libnds/include/nds/arm9/video.h:
 /opt/devkitpro/libnds/include/nds/arm9/videoGL.h:
+/Users/lucacaspari/Development/pokevault/source/font.inc:
