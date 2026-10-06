@@ -33,8 +33,20 @@ enum {
     FILTER_SEEN = 1,
     FILTER_DEX = 2,
     FILTER_SHINY = 3,
-    FILTER_RULES = 4,
+    FILTER_GAMES = 4,
+    FILTER_MODE = 5,
+    FILTER_ROOT = 6,
     FILTER_PAGE = 20,
+    PANE_ROOT = 0,
+    PANE_GAMES = 1,
+    PANE_MODE = 2,
+    DEX_ALL = 0,
+    DEX_KANTO = 1,
+    DEX_JOHTO = 2,
+    DEX_HOENN = 3,
+    DEX_SINNOH = 4,
+    DEX_UNOVA = 5,
+    DEX_MODES = 6,
     INK_SHINY = 6,
     INK_MUTED = 8,
     INK_GOLD = 11,
@@ -70,14 +82,20 @@ static int home_cursor;
 static int game_cursor;
 static int game_scroll;
 static int view = VIEW_DEX;
-static int caught;
 static int filter_caught;
 static int filter_seen;
 static int filter_dex;
 static int filter_shiny;
 static int filter_version[MAX_SAVES];
+static int filter_pane;
 static int filter_cursor;
 static int filter_scroll;
+static int game_filter_cursor;
+static int game_filter_scroll;
+static int mode_cursor;
+static int mode_scroll;
+static int dex_mode;
+static int list_span_caught;
 
 static const char *const ink_code[16] = {
     "\x1b[30;0m", "\x1b[31;0m", "\x1b[32;0m", "\x1b[33;0m",
@@ -487,16 +505,78 @@ static int species_from_disabled_only(const Dex *dex, const SpeciesRow *row)
     return any && !enabled;
 }
 
+static const char *dex_mode_name(int mode)
+{
+    static const char *const names[DEX_MODES] = {
+        "All", "Kanto", "Johto", "Hoenn", "Sinnoh", "Unova"
+    };
+    if (mode < 0 || mode >= DEX_MODES)
+        return names[0];
+    return names[mode];
+}
+
+/* National numbers for the species introduced in that region. */
+static void mode_range(int mode, int *first, int *last)
+{
+    switch (mode) {
+    case DEX_KANTO:
+        *first = 1;
+        *last = 151;
+        break;
+    case DEX_JOHTO:
+        *first = 152;
+        *last = 251;
+        break;
+    case DEX_HOENN:
+        *first = 252;
+        *last = 386;
+        break;
+    case DEX_SINNOH:
+        *first = 387;
+        *last = 493;
+        break;
+    case DEX_UNOVA:
+        *first = 494;
+        *last = NATIONAL_DEX;
+        break;
+    default:
+        *first = 1;
+        *last = NATIONAL_DEX;
+        break;
+    }
+}
+
+static int species_in_mode(int species)
+{
+    int first;
+    int last;
+    mode_range(dex_mode, &first, &last);
+    return species >= first && species <= last;
+}
+
+static int mode_span(void)
+{
+    int first;
+    int last;
+    mode_range(dex_mode, &first, &last);
+    return last - first + 1;
+}
+
 static void apply_filter(const Dex *dex)
 {
     int i;
     int n = 0;
+    int owned = 0;
     for (i = 0; i < NATIONAL_DEX; i++) {
         int stored;
         int shiny;
         int seen;
         int in_dex;
+        if (!species_in_mode(catalog[i].species))
+            continue;
         measure_species(dex, &catalog[i], &stored, &shiny, &seen, &in_dex);
+        if (stored > 0)
+            owned++;
         if (filter_caught && stored == 0)
             continue;
         if (filter_seen && !seen)
@@ -510,6 +590,7 @@ static void apply_filter(const Dex *dex)
         rows[n++] = catalog[i];
     }
     row_count = n;
+    list_span_caught = owned;
 }
 
 static int enabled_stored(const Dex *dex, const SpeciesRow *row)
@@ -542,7 +623,6 @@ static void refresh_rows(const Dex *dex)
     int mon = 0;
     int i;
 
-    caught = 0;
     for (i = 1; i <= NATIONAL_DEX; i++) {
         int count = 0;
         int first;
@@ -558,8 +638,6 @@ static void refresh_rows(const Dex *dex)
         catalog[i - 1].first = (uint16_t)first;
         catalog[i - 1].dex_caught = (uint8_t)species_in_dex(dex, i, 1);
         catalog[i - 1].dex_seen = (uint8_t)species_in_dex(dex, i, 0);
-        if (count > 0)
-            caught++;
     }
     apply_filter(dex);
 }
@@ -697,8 +775,8 @@ static const char *list_heading(const Dex *dex)
     int n = (filter_caught ? 1 : 0) + (filter_seen ? 1 : 0) + (filter_dex ? 1 : 0)
         + (filter_shiny ? 1 : 0) + (versions_narrowed(dex) ? 1 : 0);
     if (n == 0)
-        return "Pokedex";
-    if (n > 1)
+        return dex_mode == DEX_ALL ? "Pokedex" : dex_mode_name(dex_mode);
+    if (n > 1 || dex_mode != DEX_ALL)
         return "Filtered";
     if (filter_caught)
         return "Caught";
@@ -708,16 +786,18 @@ static const char *list_heading(const Dex *dex)
         return "In Dex";
     if (filter_shiny)
         return "Shiny";
-    return "Versions";
+    return "Games";
 }
 
 static void draw_dex_list(const Dex *dex)
 {
     char right[12];
     const char *heading = list_heading(dex);
+    int shown = (filter_caught || filter_seen || filter_dex || filter_shiny)
+        ? row_count : list_span_caught;
     int i;
     int last;
-    snprintf(right, sizeof right, "%d/%d", caught, NATIONAL_DEX);
+    snprintf(right, sizeof right, "%d/%d", shown, mode_span());
     title_row(0, heading, right);
     rule_row(1);
     if (row_count == 0) {
@@ -1148,36 +1228,30 @@ static void draw_copy_weak(unsigned species, unsigned form, int shiny)
     }
 }
 
-static int filter_items(const Dex *dex)
+static void clamp_pane(int *cursor, int *scroll, int count)
 {
-    return FILTER_RULES + dex->save_count;
-}
-
-/* Versions sit under a header line, so their screen line is one past the item index. */
-static int filter_line_of(const Dex *dex, int item)
-{
-    if (dex->save_count > 0 && item >= FILTER_RULES)
-        return item + 1;
-    return item;
+    if (count < 1)
+        count = 1;
+    if (*cursor < 0)
+        *cursor = 0;
+    if (*cursor >= count)
+        *cursor = count - 1;
+    if (*cursor < *scroll)
+        *scroll = *cursor;
+    if (*cursor >= *scroll + FILTER_PAGE)
+        *scroll = *cursor - FILTER_PAGE + 1;
+    if (*scroll < 0)
+        *scroll = 0;
 }
 
 static void clamp_filter(const Dex *dex)
 {
-    int count = filter_items(dex);
-    int line;
-    if (count < 1)
-        count = 1;
-    if (filter_cursor < 0)
-        filter_cursor = 0;
-    if (filter_cursor >= count)
-        filter_cursor = count - 1;
-    line = filter_line_of(dex, filter_cursor);
-    if (line < filter_scroll)
-        filter_scroll = line;
-    if (line >= filter_scroll + FILTER_PAGE)
-        filter_scroll = line - FILTER_PAGE + 1;
-    if (filter_scroll < 0)
-        filter_scroll = 0;
+    if (filter_pane == PANE_GAMES)
+        clamp_pane(&game_filter_cursor, &game_filter_scroll, dex->save_count);
+    else if (filter_pane == PANE_MODE)
+        clamp_pane(&mode_cursor, &mode_scroll, DEX_MODES);
+    else
+        clamp_pane(&filter_cursor, &filter_scroll, FILTER_ROOT);
 }
 
 static void toggle_filter(int item)
@@ -1190,113 +1264,236 @@ static void toggle_filter(int item)
         filter_dex = !filter_dex;
     else if (item == FILTER_SHINY)
         filter_shiny = !filter_shiny;
-    else if (item >= FILTER_RULES && item - FILTER_RULES < MAX_SAVES)
-        filter_version[item - FILTER_RULES] = !filter_version[item - FILTER_RULES];
 }
 
-static void draw_filter_row(const Dex *dex, int screen_row, int item)
+static int games_enabled(const Dex *dex)
 {
-    int selected = item == filter_cursor;
-    int ink = selected ? INK_GOLD : INK_CREAM;
+    int i;
     int on = 0;
-    const char *label = "";
-    if (item == FILTER_CAUGHT) {
-        label = "Caught";
-        on = filter_caught;
-    } else if (item == FILTER_SEEN) {
-        label = "Seen";
-        on = filter_seen;
-    } else if (item == FILTER_DEX) {
-        label = "In Dex";
-        on = filter_dex;
-    } else if (item == FILTER_SHINY) {
-        label = "Shiny";
-        on = filter_shiny;
+    for (i = 0; i < dex->save_count; i++) {
+        if (filter_version[i])
+            on++;
     }
+    return on;
+}
+
+static void draw_toggle_row(int screen_row, int selected, const char *label, const char *value, int active)
+{
+    int ink = selected ? INK_GOLD : INK_CREAM;
     at(screen_row, 0);
     emit(ink, selected ? ">" : "", 2);
-    if (item < FILTER_RULES) {
-        emit(ink, label, 22);
-    } else {
-        const SaveInfo *info = &dex->saves[item - FILTER_RULES];
-        on = filter_version[item - FILTER_RULES];
-        emit(ink, info->game, 6);
-        emit(ink, info->name[0] ? info->name : info->game, 16);
+    emit(ink, label, 16);
+    emit_right(active ? INK_GOLD : INK_MUTED, value, 12);
+}
+
+static void draw_root_filter(const Dex *dex)
+{
+    char games[24];
+    int i;
+    int on = games_enabled(dex);
+    if (dex->save_count <= 0)
+        snprintf(games, sizeof games, "None");
+    else if (on == dex->save_count)
+        snprintf(games, sizeof games, "All");
+    else if (on == 0)
+        snprintf(games, sizeof games, "Off");
+    else
+        snprintf(games, sizeof games, "%d/%d", on, dex->save_count);
+    title_row(0, "Filter", "");
+    rule_row(1);
+    for (i = 0; i < FILTER_ROOT; i++) {
+        int row = 2 + i;
+        int selected = i == filter_cursor;
+        if (i == FILTER_CAUGHT)
+            draw_toggle_row(row, selected, "Caught", filter_caught ? "On" : "Off", filter_caught);
+        else if (i == FILTER_SEEN)
+            draw_toggle_row(row, selected, "Seen", filter_seen ? "On" : "Off", filter_seen);
+        else if (i == FILTER_DEX)
+            draw_toggle_row(row, selected, "In Dex", filter_dex ? "On" : "Off", filter_dex);
+        else if (i == FILTER_SHINY)
+            draw_toggle_row(row, selected, "Shiny", filter_shiny ? "On" : "Off", filter_shiny);
+        else if (i == FILTER_GAMES)
+            draw_toggle_row(row, selected, "Games", games, dex->save_count > 0 && on != dex->save_count);
+        else
+            draw_toggle_row(row, selected, "Pokedex", dex_mode_name(dex_mode), dex_mode != DEX_ALL);
     }
-    emit_right(on ? INK_GOLD : INK_MUTED, on ? "On" : "Off", 6);
+}
+
+static const char *profile_name(const SaveInfo *info);
+
+static void draw_game_filters(const Dex *dex)
+{
+    int last;
+    int i;
+    char right[24];
+    if (dex->save_count <= 0) {
+        title_row(0, "Games", "");
+        rule_row(1);
+        at(3, 0);
+        use_ink(INK_MUTED);
+        fputs("No saves.", stdout);
+        return;
+    }
+    snprintf(right, sizeof right, "%d/%d", games_enabled(dex), dex->save_count);
+    title_row(0, "Games", right);
+    rule_row(1);
+    last = game_filter_scroll + FILTER_PAGE;
+    if (last > dex->save_count)
+        last = dex->save_count;
+    for (i = game_filter_scroll; i < last; i++) {
+        const SaveInfo *info = &dex->saves[i];
+        int selected = i == game_filter_cursor;
+        int ink = selected ? INK_GOLD : INK_CREAM;
+        int on = filter_version[i];
+        at(2 + (i - game_filter_scroll), 0);
+        emit(ink, selected ? ">" : "", 2);
+        emit(ink, info->game, 6);
+        emit(ink, profile_name(info), 16);
+        emit_right(on ? INK_GOLD : INK_MUTED, on ? "On" : "Off", 6);
+    }
+}
+
+static void draw_mode_filters(void)
+{
+    int i;
+    title_row(0, "Pokedex", dex_mode_name(dex_mode));
+    rule_row(1);
+    for (i = mode_scroll; i < DEX_MODES && i < mode_scroll + FILTER_PAGE; i++) {
+        int on = i == dex_mode;
+        draw_toggle_row(2 + (i - mode_scroll), i == mode_cursor, dex_mode_name(i),
+                        on ? "On" : "Off", on);
+    }
 }
 
 static void draw_filter(const Dex *dex)
 {
-    int lines = filter_items(dex);
-    int line;
+    if (filter_pane == PANE_GAMES)
+        draw_game_filters(dex);
+    else if (filter_pane == PANE_MODE)
+        draw_mode_filters();
+    else
+        draw_root_filter(dex);
+}
+
+static void draw_mode_note(int mode)
+{
+    int first;
     int last;
-    if (dex->save_count > 0)
-        lines++;
-    title_row(0, "Filter", "");
-    rule_row(1);
-    last = filter_scroll + FILTER_PAGE;
-    if (last > lines)
-        last = lines;
-    for (line = filter_scroll; line < last; line++) {
-        int screen = 2 + (line - filter_scroll);
-        int item = line;
-        if (dex->save_count > 0 && line == FILTER_RULES) {
-            at(screen, 0);
-            use_ink(INK_MUTED);
-            fputs("Versions", stdout);
-            continue;
-        }
-        if (dex->save_count > 0 && line > FILTER_RULES)
-            item = line - 1;
-        draw_filter_row(dex, screen, item);
+    mode_range(mode, &first, &last);
+    at(9, 0);
+    use_ink(INK_CREAM);
+    if (mode == DEX_ALL) {
+        fputs("The full National Dex.", stdout);
+        return;
     }
+    fputs(dex_mode_name(mode), stdout);
+    fputs(" National Dex.", stdout);
+    at(11, 0);
+    use_ink(INK_GOLD);
+    printf("#%03d - #%03d", first, last);
+}
+
+static void draw_games_rule(const Dex *dex)
+{
+    int on = games_enabled(dex);
+    at(9, 0);
+    use_ink(INK_CREAM);
+    if (dex->save_count <= 0)
+        fputs("No saves.", stdout);
+    else if (on == dex->save_count)
+        fputs("Every save is included.", stdout);
+    else if (on == 0)
+        fputs("No saves are included.", stdout);
+    else
+        printf("%d of %d saves included.", on, dex->save_count);
 }
 
 /* Bottom screen while filtering: only the sentence for the highlighted rule. */
 static void draw_filter_note(const Dex *dex)
 {
-    int item = filter_cursor;
-    if (item < 0 || item >= filter_items(dex))
-        return;
-    if (item == FILTER_CAUGHT) {
-        at(9, 0);
-        use_ink(INK_CREAM);
-        fputs("Stored in a box or the party.", stdout);
-    } else if (item == FILTER_SEEN) {
-        at(9, 0);
-        use_ink(INK_CREAM);
-        fputs("Seen in a Pokedex.", stdout);
-    } else if (item == FILTER_DEX) {
-        at(9, 0);
-        use_ink(INK_CREAM);
-        fputs("Caught in a Pokedex.", stdout);
-    } else if (item == FILTER_SHINY) {
-        at(9, 0);
-        use_ink(INK_CREAM);
-        fputs("A shiny copy is stored.", stdout);
-    } else {
-        const SaveInfo *info = &dex->saves[item - FILTER_RULES];
+    if (filter_pane == PANE_GAMES) {
+        const SaveInfo *info;
+        if (dex->save_count <= 0 || game_filter_cursor < 0 || game_filter_cursor >= dex->save_count)
+            return;
+        info = &dex->saves[game_filter_cursor];
         at(8, 0);
         use_ink(INK_CREAM);
         fputs("Include Pokemon from", stdout);
         at(10, 0);
         use_ink(INK_GOLD);
-        emit(INK_GOLD, info->name[0] ? info->name : info->game, COLS);
+        emit(INK_GOLD, info->name[0] ? info->name : profile_name(info), COLS);
         if (info->game[0]) {
             at(11, 0);
             use_ink(INK_MUTED);
             fputs(info->game, stdout);
         }
+        return;
+    }
+    if (filter_pane == PANE_MODE) {
+        draw_mode_note(mode_cursor);
+        return;
+    }
+    if (filter_cursor == FILTER_CAUGHT) {
+        at(9, 0);
+        use_ink(INK_CREAM);
+        fputs("Stored in a box or the party.", stdout);
+    } else if (filter_cursor == FILTER_SEEN) {
+        at(9, 0);
+        use_ink(INK_CREAM);
+        fputs("Seen in a Pokedex.", stdout);
+    } else if (filter_cursor == FILTER_DEX) {
+        at(9, 0);
+        use_ink(INK_CREAM);
+        fputs("Caught in a Pokedex.", stdout);
+    } else if (filter_cursor == FILTER_SHINY) {
+        at(9, 0);
+        use_ink(INK_CREAM);
+        fputs("A shiny copy is stored.", stdout);
+    } else if (filter_cursor == FILTER_GAMES) {
+        draw_games_rule(dex);
+    } else if (filter_cursor == FILTER_MODE) {
+        draw_mode_note(dex_mode);
     }
 }
 
-static int dex_owned_count(const SaveInfo *info)
+static int game_national(const SaveInfo *info)
+{
+    if (!info || !info->game[0])
+        return NATIONAL_DEX;
+    if (strcmp(info->game, "B/W") == 0 || strcmp(info->game, "B2/W2") == 0)
+        return 649;
+    if (strcmp(info->game, "D/P") == 0 || strcmp(info->game, "Pt") == 0
+        || strcmp(info->game, "HG/SS") == 0)
+        return 493;
+    return 386;
+}
+
+static int dex_flag_count(const SaveInfo *info, int want_caught, int cap)
+{
+    const uint8_t *bits;
+    int i;
+    int n = 0;
+    if (!info)
+        return 0;
+    if (cap > NATIONAL_DEX)
+        cap = NATIONAL_DEX;
+    bits = want_caught ? info->dex_caught : info->dex_seen;
+    for (i = 0; i < cap; i++)
+        n += (bits[i >> 3] >> (i & 7)) & 1;
+    return n;
+}
+
+static int save_shiny_count(const Dex *dex, int index)
 {
     int i;
     int n = 0;
-    for (i = 0; i < NATIONAL_DEX; i++)
-        n += (info->dex_caught[i >> 3] >> (i & 7)) & 1;
+    if (!dex || index < 0)
+        return 0;
+    for (i = 0; i < dex->mon_count; i++) {
+        const MonRef *mon = &dex->mons[i];
+        if (mon->save_index == (uint8_t)index && (mon->flags & MON_SHINY))
+            n++;
+    }
     return n;
 }
 
@@ -1380,19 +1577,32 @@ static void draw_home_note(void)
     fputs("A open", stdout);
 }
 
+static void draw_progress_bar(int row, const int *counts, const int *inks, int total);
+
+static void value_row(int row, const char *label, const char *value, int value_ink)
+{
+    at(row, 0);
+    emit(INK_MUTED, label, 14);
+    emit_right(value_ink, value, COLS - 14);
+}
+
 static void draw_games(const Dex *dex)
 {
     int last;
     int i;
-    title_row(0, "Games", "");
-    rule_row(1);
+    char right[24];
     if (dex->save_count <= 0) {
+        title_row(0, "Games", "");
+        rule_row(1);
         at(3, 0);
         use_ink(INK_MUTED);
         fputs("No saves.", stdout);
         return;
     }
     clamp_cursor(&game_cursor, &game_scroll, dex->save_count, GAME_PAGE);
+    snprintf(right, sizeof right, "%d/%d", game_cursor + 1, dex->save_count);
+    title_row(0, "Games", right);
+    rule_row(1);
     last = game_scroll + GAME_PAGE;
     if (last > dex->save_count)
         last = dex->save_count;
@@ -1403,18 +1613,19 @@ static void draw_games(const Dex *dex)
         char dexn[12];
         int row = 2 + (i - game_scroll) * 2;
         int on = i == game_cursor;
+        int cap = game_national(info);
         format_money(info->money, money, sizeof money);
         format_play(info, play, sizeof play);
-        snprintf(dexn, sizeof dexn, "Dex %d", dex_owned_count(info));
+        snprintf(dexn, sizeof dexn, "%d/%d", dex_flag_count(info, 1, cap), cap);
         at(row, 0);
         emit(on ? INK_GOLD : INK_CREAM, on ? ">" : "", 2);
         emit(on ? INK_GOLD : INK_CREAM, profile_name(info), 20);
         emit_right(on ? INK_GOLD : INK_MUTED, info->game, 8);
         at(row + 1, 0);
         emit(INK_MUTED, "", 2);
-        emit(INK_GOLD, money, 10);
-        emit(INK_CREAM, play, 10);
-        emit_right(INK_CREAM, dexn, 8);
+        emit(on ? INK_GOLD : INK_MUTED, money, 11);
+        emit(on ? INK_CREAM : INK_MUTED, play, 10);
+        emit_right(on ? INK_CREAM : INK_MUTED, dexn, 7);
     }
 }
 
@@ -1423,6 +1634,17 @@ static void draw_game_card(const Dex *dex)
     const SaveInfo *info;
     char money[16];
     char play[16];
+    char stored[12];
+    char shiny[12];
+    char caught_txt[16];
+    char seen_txt[16];
+    int cap;
+    int caught_n;
+    int seen_n;
+    int seen_only;
+    int rest;
+    int counts[5];
+    int inks[4];
     if (dex->save_count <= 0) {
         at(8, 0);
         use_ink(INK_MUTED);
@@ -1436,35 +1658,49 @@ static void draw_game_card(const Dex *dex)
         return;
     }
     info = &dex->saves[game_cursor];
+    cap = game_national(info);
+    caught_n = dex_flag_count(info, 1, cap);
+    seen_n = dex_flag_count(info, 0, cap);
+    if (seen_n < caught_n)
+        seen_n = caught_n;
+    seen_only = seen_n - caught_n;
+    rest = cap - seen_n;
+    if (rest < 0)
+        rest = 0;
     format_money(info->money, money, sizeof money);
     format_play(info, play, sizeof play);
+    snprintf(stored, sizeof stored, "%u", (unsigned)info->count);
+    snprintf(shiny, sizeof shiny, "%d", save_shiny_count(dex, game_cursor));
+    snprintf(caught_txt, sizeof caught_txt, "%d/%d", caught_n, cap);
+    snprintf(seen_txt, sizeof seen_txt, "%d/%d", seen_n, cap);
+    at(0, 0);
+    emit(INK_GOLD, profile_name(info), COLS);
     at(1, 0);
-    use_ink(INK_GOLD);
-    fputs(profile_name(info), stdout);
+    if (info->trainer[0] && info->name[0])
+        emit(INK_CREAM, info->name, COLS);
+    else
+        emit(INK_MUTED, info->game, COLS);
     at(2, 0);
-    use_ink(INK_CREAM);
-    emit(INK_CREAM, info->name[0] ? info->name : info->game, COLS);
-    at(3, 0);
     use_ink(INK_MUTED);
-    fputs(info->game, stdout);
-    at(5, 0);
-    use_ink(INK_MUTED);
-    fputs("Money", stdout);
-    at(6, 0);
-    use_ink(INK_GOLD);
-    fputs(money, stdout);
-    at(8, 0);
-    use_ink(INK_MUTED);
-    fputs("Play time", stdout);
-    at(9, 0);
-    use_ink(INK_CREAM);
-    fputs(play, stdout);
-    at(11, 0);
-    use_ink(INK_MUTED);
-    fputs("Pokedex", stdout);
-    at(12, 0);
-    use_ink(INK_CREAM);
-    printf("%d caught", dex_owned_count(info));
+    if (info->trainer[0] && info->name[0])
+        fputs(info->game, stdout);
+    rule_row(3);
+    value_row(5, "Money", money, INK_GOLD);
+    value_row(6, "Play time", play, INK_CREAM);
+    value_row(7, "Pokemon", stored, INK_CREAM);
+    value_row(8, "Shiny", shiny, INK_SHINY);
+    value_row(10, "Caught", caught_txt, INK_GOLD);
+    counts[0] = caught_n;
+    counts[1] = seen_only;
+    counts[2] = 0;
+    counts[3] = 0;
+    counts[4] = rest;
+    inks[0] = INK_GOLD;
+    inks[1] = INK_MUTED;
+    inks[2] = INK_MUTED;
+    inks[3] = INK_MUTED;
+    draw_progress_bar(11, counts, inks, cap);
+    value_row(13, "Seen", seen_txt, INK_CREAM);
     at(21, 0);
     use_ink(INK_MUTED);
     fputs("B back", stdout);
@@ -1567,7 +1803,8 @@ static void legend_line(int row, int ink, const char *label, int count)
 
 static int list_filtered(const Dex *dex)
 {
-    return filter_caught || filter_seen || filter_dex || filter_shiny || versions_narrowed(dex);
+    return filter_caught || filter_seen || filter_dex || filter_shiny
+        || versions_narrowed(dex) || dex_mode != DEX_ALL;
 }
 
 static void draw_progress(const Dex *dex)
@@ -1767,8 +2004,14 @@ void ui_run(Dex *dex)
     filter_seen = 0;
     filter_dex = 0;
     filter_shiny = 0;
+    filter_pane = PANE_ROOT;
     filter_cursor = 0;
     filter_scroll = 0;
+    game_filter_cursor = 0;
+    game_filter_scroll = 0;
+    mode_cursor = 0;
+    mode_scroll = 0;
+    dex_mode = DEX_ALL;
     dex_sort(dex, 1);
     refresh_rows(dex);
     page = PAGE_HOME;
@@ -1838,7 +2081,7 @@ void ui_run(Dex *dex)
                 dirty = 1;
             }
         } else if (view == VIEW_FILTER) {
-            if (hit & (KEY_B | KEY_X)) {
+            if (hit & KEY_X || (hit & KEY_B && filter_pane == PANE_ROOT)) {
                 uint16_t species = 0;
                 int keep = 0;
                 if (dex_cursor >= 0 && dex_cursor < row_count) {
@@ -1846,6 +2089,7 @@ void ui_run(Dex *dex)
                     keep = 1;
                 }
                 view = VIEW_DEX;
+                filter_pane = PANE_ROOT;
                 apply_filter(dex);
                 if (keep)
                     select_species(species);
@@ -1853,21 +2097,55 @@ void ui_run(Dex *dex)
                     clamp_cursor(&dex_cursor, &dex_scroll, row_count, DEX_PAGE);
                 music_click();
                 dirty = 1;
+            } else if (hit & KEY_B) {
+                filter_pane = PANE_ROOT;
+                music_click();
+                dirty = 1;
             } else if (hit & KEY_A) {
-                toggle_filter(filter_cursor);
+                if (filter_pane == PANE_ROOT && filter_cursor == FILTER_GAMES) {
+                    if (dex->save_count > 0) {
+                        filter_pane = PANE_GAMES;
+                        clamp_filter(dex);
+                    }
+                } else if (filter_pane == PANE_ROOT && filter_cursor == FILTER_MODE) {
+                    filter_pane = PANE_MODE;
+                    mode_cursor = dex_mode;
+                    clamp_filter(dex);
+                } else if (filter_pane == PANE_GAMES) {
+                    if (game_filter_cursor >= 0 && game_filter_cursor < dex->save_count)
+                        filter_version[game_filter_cursor] = !filter_version[game_filter_cursor];
+                } else if (filter_pane == PANE_MODE) {
+                    dex_mode = mode_cursor;
+                } else {
+                    toggle_filter(filter_cursor);
+                }
                 music_click();
                 dirty = 1;
             } else if (down & (KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT | KEY_L | KEY_R)) {
-                int before = filter_cursor;
-                nudge(&filter_cursor, filter_items(dex), FILTER_PAGE, down);
+                int before;
+                int count;
+                int *cursor;
+                if (filter_pane == PANE_GAMES) {
+                    cursor = &game_filter_cursor;
+                    count = dex->save_count;
+                } else if (filter_pane == PANE_MODE) {
+                    cursor = &mode_cursor;
+                    count = DEX_MODES;
+                } else {
+                    cursor = &filter_cursor;
+                    count = FILTER_ROOT;
+                }
+                before = *cursor;
+                nudge(cursor, count, FILTER_PAGE, down);
                 clamp_filter(dex);
-                if (filter_cursor != before) {
+                if (*cursor != before) {
                     music_click();
                     dirty = 1;
                 }
             }
         } else if (hit & KEY_X && view == VIEW_DEX) {
             view = VIEW_FILTER;
+            filter_pane = PANE_ROOT;
             music_click();
             dirty = 1;
         } else if (hit & KEY_B && view == VIEW_COPIES) {
