@@ -13,7 +13,10 @@ enum {
 
 enum {
     MAX_MONS = 16384,
-    MAX_SAVES = 48
+    MAX_SAVES = 48,
+    NATIONAL_DEX = 649,
+    /* One bit per species, species 1 in bit 0. */
+    DEX_BYTES = (NATIONAL_DEX + 7) / 8
 };
 
 /* ivs uses the save's bit layout: 5 bits each of HP, Attack, Defense, Speed,
@@ -33,18 +36,29 @@ typedef struct {
     uint8_t nature;
     uint8_t form;
     uint8_t evs[6];
+    /* ball 0 means the save did not record one. met_month 0 means no date
+       (Generation 3 never stores one). met_year is years since 2000. */
+    uint8_t ball;
+    uint8_t met_year;
+    uint8_t met_month;
+    uint8_t met_day;
 } MonRef;
 
 typedef struct {
     uint16_t species;
     uint16_t count;
     uint16_t first;
+    uint8_t dex_caught;
+    uint8_t dex_seen;
 } SpeciesRow;
 
 typedef struct {
     char name[32];
     char game[8];
     uint16_t count;
+    /* Pokédex registration for this save, separate from Pokémon still stored. */
+    uint8_t dex_caught[DEX_BYTES];
+    uint8_t dex_seen[DEX_BYTES];
 } SaveInfo;
 
 typedef struct {

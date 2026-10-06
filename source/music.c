@@ -11,7 +11,10 @@
 enum {
     TRACK_COUNT = 2,
     RATE = 22050,
-    STREAM_SAMPLES = 32768,
+    /* Samples queued ahead of the play head. 32768 was about 1.5 seconds,
+       so a click mixed into the next refill arrived late. ~46 ms is enough
+       to ride out a skipped frame and still feel immediate. */
+    STREAM_SAMPLES = 1024,
     /* About 30 ms. Long enough to read as a tick on the DS speaker,
        short enough that repeats while scrolling stay separate. */
     CLICK_LEN = 640
@@ -82,8 +85,6 @@ static void build_click(void)
         s = (sine(phase) * 5 + sine(phase2) * 2 + low) / 8;
         phase += step;
         phase2 += step * 2u;
-        if (i < 16)
-            s = (s * i) / 16;
         s = (s * env) >> 15;
         click_pcm[i] = (int16_t)s;
         /* ~0.989 per sample: a short tok, still gone before the next repeat. */

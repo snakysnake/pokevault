@@ -7,12 +7,6 @@
 
 static Dex dex;
 
-static void rescan(Dex *list)
-{
-    dex_clear(list);
-    scan_saves(list, ui_status);
-}
-
 int main(void)
 {
     ui_init();
@@ -24,7 +18,8 @@ int main(void)
         ui_fail("Could not open the SD card.");
 
     ui_status("Scanning the card...");
-    rescan(&dex);
-    ui_run(&dex, rescan);
+    dex_clear(&dex);
+    scan_saves(&dex, ui_status);
+    ui_run(&dex);
     return 0;
 }

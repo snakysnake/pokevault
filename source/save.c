@@ -74,6 +74,8 @@ int dex_species_rows(const Dex *dex, SpeciesRow *out, int cap)
         out[n].species = species;
         out[n].count = (uint16_t)count;
         out[n].first = (uint16_t)first;
+        out[n].dex_caught = 0;
+        out[n].dex_seen = 0;
         n++;
     }
     return n;
@@ -96,7 +98,8 @@ static int begin_save(Dex *dex, const char *name, const char *game)
 
 static void add_mon(Dex *dex, int save_index, uint16_t species, uint8_t level,
                     uint8_t flags, uint8_t box, uint8_t slot, const uint16_t moves[4],
-                    uint32_t ivs, const uint8_t evs[6], uint8_t nature, uint8_t form)
+                    uint32_t ivs, const uint8_t evs[6], uint8_t nature, uint8_t form,
+                    uint8_t ball, uint8_t met_year, uint8_t met_month, uint8_t met_day)
 {
     MonRef *mon;
     int i;
@@ -121,8 +124,76 @@ static void add_mon(Dex *dex, int save_index, uint16_t species, uint8_t level,
     mon->form = form;
     for (i = 0; i < 6; i++)
         mon->evs[i] = evs ? evs[i] : 0;
+    mon->ball = ball;
+    mon->met_year = met_year;
+    mon->met_month = met_month;
+    mon->met_day = met_day;
     dex->mon_count++;
     dex->saves[save_index].count++;
+}
+
+static void dex_mark(uint8_t *bits, int species)
+{
+    int bit;
+    if (species < 1 || species > NATIONAL_DEX)
+        return;
+    bit = species - 1;
+    bits[bit >> 3] |= (uint8_t)(1u << (bit & 7));
+}
+
+static int flag_at(const uint8_t *region, int bit)
+{
+    return (region[bit >> 3] >> (bit & 7)) & 1;
+}
+
+/* caught_ofs / seen_ofs index the first byte of each bitfield.
+   seen_regions copies follow, each region_bytes long. Caught also counts as seen. */
+static void read_dex_flags(SaveInfo *info, const uint8_t *block, int block_len,
+                           int caught_ofs, int seen_ofs, int region_bytes,
+                           int seen_regions, int max_species)
+{
+    int species;
+    if (!info || !block || block_len <= 0)
+        return;
+    if (max_species > NATIONAL_DEX)
+        max_species = NATIONAL_DEX;
+    for (species = 1; species <= max_species; species++) {
+        int bit = species - 1;
+        int caught = 0;
+        int seen = 0;
+        int region;
+        int cbyte = caught_ofs + (bit >> 3);
+        if (cbyte >= 0 && cbyte < block_len && flag_at(block + caught_ofs, bit))
+            caught = 1;
+        for (region = 0; region < seen_regions; region++) {
+            int base = seen_ofs + region * region_bytes;
+            int sbyte = base + (bit >> 3);
+            if (base < 0 || sbyte < 0 || sbyte >= block_len)
+                break;
+            if (flag_at(block + base, bit)) {
+                seen = 1;
+                break;
+            }
+        }
+        if (caught) {
+            dex_mark(info->dex_caught, species);
+            dex_mark(info->dex_seen, species);
+        } else if (seen) {
+            dex_mark(info->dex_seen, species);
+        }
+    }
+}
+
+/* HG/SS store the ball at 0x86. Diamond, Pearl, Platinum, and Generation 5 use 0x83. */
+static uint8_t ball_of45(const uint8_t *pk, int len)
+{
+    uint8_t version;
+    if (len < 0x84)
+        return 0;
+    version = pk[0x5F];
+    if ((version == 7 || version == 8) && len >= 0x87 && pk[0x86] != 0)
+        return pk[0x86];
+    return pk[0x83];
 }
 
 static uint8_t level_of(uint32_t exp, uint16_t species, int party_level)
@@ -176,7 +247,8 @@ static void consider45(Dex *dex, int save_index, const uint8_t *raw, int len,
         evs[i] = tmp[0x18 + i];
     /* Low bits are fateful encounter and gender. The forme index is the rest. */
     add_mon(dex, save_index, species, level_of(exp, species, party_level), flags, box, slot,
-            moves, ivs, evs, (uint8_t)(pid % 25u), (uint8_t)(tmp[0x40] >> 3));
+            moves, ivs, evs, (uint8_t)(pid % 25u), (uint8_t)(tmp[0x40] >> 3),
+            ball_of45(tmp, len), tmp[0x7B], tmp[0x7C], tmp[0x7D]);
 }
 
 static void consider3(Dex *dex, int save_index, const uint8_t *raw, int len,
@@ -221,8 +293,10 @@ static void consider3(Dex *dex, int save_index, const uint8_t *raw, int len,
     moves[3] = pv_read16(tmp + 0x32);
     for (i = 0; i < 6; i++)
         evs[i] = tmp[0x38 + i];
+    /* Origins at 0x46: met level, origin game, ball, OT gender. No catch date. */
     add_mon(dex, save_index, species, level_of(exp, species, party_level), flags, box, slot,
-            moves, ivs, evs, (uint8_t)(pid % 25u), 0);
+            moves, ivs, evs, (uint8_t)(pid % 25u), 0,
+            (uint8_t)((pv_read16(tmp + 0x46) >> 11) & 0xF), 0, 0, 0);
 }
 
 static int newer_counter(uint32_t a, uint32_t b)
@@ -288,7 +362,7 @@ static bool gen4_is(const uint8_t *data, size_t len, int general_size)
 static void read_gen4(Dex *dex, const char *name, const uint8_t *data, size_t len,
                       int general_size, int storage_start, int storage_size,
                       int party, int box_start, int box_stride, int box_count,
-                      uint16_t max_species, const char *game)
+                      uint16_t max_species, const char *game, int dex_ofs)
 {
     int save_index;
     int general_half;
@@ -326,6 +400,9 @@ static void read_gen4(Dex *dex, const char *name, const uint8_t *data, size_t le
             consider45(dex, save_index, pk, 136, 0, max_species, (uint8_t)box, (uint8_t)slot);
         }
     }
+    /* u32 magic, then caught flags, then seen flags. Each region is 0x40 bytes. */
+    read_dex_flags(&dex->saves[save_index], general, general_size,
+                   dex_ofs + 4, dex_ofs + 4 + 0x40, 0x40, 1, max_species);
 }
 
 static bool gen5_footer_ok(const uint8_t *base, int main_size, int info_len)
@@ -367,7 +444,7 @@ static int gen5_base(const uint8_t *data, size_t len, int main_size, int info_le
 }
 
 static void read_gen5(Dex *dex, const char *name, const uint8_t *data, int base,
-                      uint16_t max_species, const char *game)
+                      uint16_t max_species, const char *game, int dex_ofs, int dex_len)
 {
     const uint8_t *sav = data + base;
     int save_index = begin_save(dex, name, game);
@@ -394,6 +471,9 @@ static void read_gen5(Dex *dex, const char *name, const uint8_t *data, int base,
             consider45(dex, save_index, pk, 136, 0, max_species, (uint8_t)box, (uint8_t)slot);
         }
     }
+    /* Caught at +0x08. Four seen regions (male, female, and both shiny) follow. */
+    read_dex_flags(&dex->saves[save_index], sav + dex_ofs, dex_len,
+                   0x08, 0x5C, 0x54, 4, max_species);
 }
 
 enum {
@@ -536,6 +616,8 @@ static void read_gen3(Dex *dex, const char *name, const uint8_t *data, size_t le
             consider3(dex, save_index, pk, 80, 0, (uint8_t)box, (uint8_t)slot_i);
         }
     }
+    /* Small block: owned flags at 0x28, seen flags at 0x5C. Same layout in R/S/E/FR/LG. */
+    read_dex_flags(&dex->saves[save_index], small, G3_USED, 0x28, 0x5C, 49, 1, 386);
 }
 
 static bool try_gen5(Dex *dex, const char *name, const uint8_t *data, size_t len)
@@ -545,13 +627,13 @@ static bool try_gen5(Dex *dex, const char *name, const uint8_t *data, size_t len
     if (len >= 0x26000)
         b2 = gen5_base(data, len, 0x26000, 0x94);
     if (b2 >= 0) {
-        read_gen5(dex, name, data, b2, 649, "B2/W2");
+        read_gen5(dex, name, data, b2, 649, "B2/W2", 0x21400, 0x4DC);
         return true;
     }
     if (len >= 0x24000)
         bw = gen5_base(data, len, 0x24000, 0x8C);
     if (bw >= 0) {
-        read_gen5(dex, name, data, bw, 649, "B/W");
+        read_gen5(dex, name, data, bw, 649, "B/W", 0x21600, 0x4D4);
         return true;
     }
     return false;
@@ -563,17 +645,17 @@ static bool try_gen4(Dex *dex, const char *name, const uint8_t *data, size_t len
         return false;
     if (gen4_is(data, len, 0xF628)) {
         read_gen4(dex, name, data, len, 0xF628, 0xF700, 0x12310,
-                  0x98, 0, 0x1000, 18, 493, "HG/SS");
+                  0x98, 0, 0x1000, 18, 493, "HG/SS", 0x12B8);
         return true;
     }
     if (gen4_is(data, len, 0xCF2C)) {
         read_gen4(dex, name, data, len, 0xCF2C, 0xCF2C, 0x121E4,
-                  0xA0, 4, 30 * 136, 18, 493, "Pt");
+                  0xA0, 4, 30 * 136, 18, 493, "Pt", 0x1328);
         return true;
     }
     if (gen4_is(data, len, 0xC100)) {
         read_gen4(dex, name, data, len, 0xC100, 0xC100, 0x121E0,
-                  0x98, 4, 30 * 136, 18, 493, "D/P");
+                  0x98, 4, 30 * 136, 18, 493, "D/P", 0x12DC);
         return true;
     }
     return false;

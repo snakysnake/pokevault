@@ -6,6 +6,6 @@
 void ui_init(void);
 void ui_status(const char *msg);
 void ui_fail(const char *msg);
-void ui_run(Dex *dex, void (*rescan)(Dex *dex));
+void ui_run(Dex *dex);
 
 #endif

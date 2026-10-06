@@ -106,6 +106,18 @@ static const MonRef *find_species(const Dex *dex, uint16_t species)
     return NULL;
 }
 
+static int save_bit(const uint8_t *bits, int species)
+{
+    int bit = species - 1;
+    return (bits[bit >> 3] >> (bit & 7)) & 1;
+}
+
+static void set_save_bit(uint8_t *region, int species)
+{
+    int bit = species - 1;
+    region[bit >> 3] |= (uint8_t)(1u << (bit & 7));
+}
+
 static void test_exp(void)
 {
     CHECK(pv_level_from_exp(0, 0) == 1);
@@ -175,9 +187,21 @@ static void test_dp(Dex *dex)
     mark_gen4(sav, 0xC100, 0xC100, 0x121E0);
     fill_pk45(party, 236, 8u << 13, 25, 1000, 1, 0, 0, 50);
     fill_pk45(box, 136, 0xABCDu, 6, 1000, 2, 2, 1, 0);
+    CHECK(pv_decrypt45(party, 236));
+    party[0x5F] = 10;
+    party[0x7B] = 9;
+    party[0x7C] = 4;
+    party[0x7D] = 22;
+    party[0x83] = 4;
+    pv_refresh_checksum45(party);
+    pv_encrypt45(party, 236);
     sav[0x94] = 1;
     memcpy(sav + 0x98, party, sizeof party);
     memcpy(sav + 0xC100 + 4, box, sizeof box);
+    /* Caught Pikachu, seen-only Mew. The egg is stored but not registered. */
+    set_save_bit(sav + 0x12DC + 4, 25);
+    set_save_bit(sav + 0x12DC + 4 + 0x40, 25);
+    set_save_bit(sav + 0x12DC + 4 + 0x40, 151);
 
     dex_clear(dex);
     CHECK(save_read(dex, "Diamond", sav, 0x80000));
@@ -190,6 +214,11 @@ static void test_dp(Dex *dex)
     CHECK(mon && mon->moves[0] == 0 && mon->moves[3] == 0);
     CHECK(boxed && boxed->level == 12 && (boxed->flags & MON_EGG) && boxed->box == 0);
     CHECK(boxed && boxed->moves[0] == 0);
+    CHECK(mon && mon->ball == 4 && mon->met_year == 9 && mon->met_month == 4 && mon->met_day == 22);
+    CHECK(boxed && boxed->ball == 0 && boxed->met_month == 0);
+    CHECK(save_bit(dex->saves[0].dex_caught, 25) && save_bit(dex->saves[0].dex_seen, 25));
+    CHECK(!save_bit(dex->saves[0].dex_caught, 151) && save_bit(dex->saves[0].dex_seen, 151));
+    CHECK(!save_bit(dex->saves[0].dex_seen, 6));
     free(sav);
 }
 
@@ -202,6 +231,7 @@ static void test_pt_party_offset(Dex *dex)
     fill_pk45(party, 236, 1, 133, 800000, 5, 5, 0, 36);
     sav[0x9C] = 1;
     memcpy(sav + 0xA0, party, sizeof party);
+    set_save_bit(sav + 0x1328 + 4, 133);
     dex_clear(dex);
     CHECK(save_read(dex, "Platinum", sav, 0x80000));
     CHECK(dex->mon_count == 1);
@@ -209,6 +239,7 @@ static void test_pt_party_offset(Dex *dex)
     CHECK(dex->mons[0].species == 133);
     CHECK(dex->mons[0].level == 36);
     CHECK(dex->mons[0].flags & MON_PARTY);
+    CHECK(save_bit(dex->saves[0].dex_caught, 133) && save_bit(dex->saves[0].dex_seen, 133));
     free(sav);
 }
 
@@ -219,7 +250,17 @@ static void test_hgss_box_stride(Dex *dex)
 
     mark_gen4(sav, 0xF628, 0xF700, 0x12310);
     fill_pk45(box, 136, 3, 25, 125000, 1, 1, 0, 0);
+    CHECK(pv_decrypt45(box, 136));
+    box[0x5F] = 7;
+    box[0x83] = 4;
+    box[0x86] = 17;
+    box[0x7B] = 10;
+    box[0x7C] = 3;
+    box[0x7D] = 1;
+    pv_refresh_checksum45(box);
+    pv_encrypt45(box, 136);
     memcpy(sav + 0xF700 + 0x1000, box, sizeof box);
+    set_save_bit(sav + 0x12B8 + 4, 25);
     dex_clear(dex);
     CHECK(save_read(dex, "HeartGold", sav, 0x80000));
     CHECK(dex->mon_count == 1);
@@ -228,6 +269,9 @@ static void test_hgss_box_stride(Dex *dex)
     CHECK(dex->mons[0].box == 1);
     CHECK(dex->mons[0].slot == 0);
     CHECK(dex->mons[0].level == 50);
+    CHECK(dex->mons[0].ball == 17);
+    CHECK(dex->mons[0].met_year == 10 && dex->mons[0].met_month == 3 && dex->mons[0].met_day == 1);
+    CHECK(save_bit(dex->saves[0].dex_caught, 25) && save_bit(dex->saves[0].dex_seen, 25));
     free(sav);
 }
 
@@ -245,6 +289,8 @@ static void test_bw_picks_newer_copy(Dex *dex)
 
     sav[0x24000 + 0x18E04] = 1;
     memcpy(sav + 0x24000 + 0x18E08, newer, sizeof newer);
+    set_save_bit(sav + 0x24000 + 0x21600 + 0x08, 133);
+    set_save_bit(sav + 0x24000 + 0x21600 + 0x5C, 495);
     seal_gen5(sav + 0x24000, 0x24000, 0x8C, 0x23F34, 9);
 
     dex_clear(dex);
@@ -254,6 +300,9 @@ static void test_bw_picks_newer_copy(Dex *dex)
     CHECK(dex->mons[0].species == 133);
     CHECK(dex->mons[0].level == 20);
     CHECK(dex->mons[0].flags & MON_PARTY);
+    CHECK(save_bit(dex->saves[0].dex_caught, 133) && save_bit(dex->saves[0].dex_seen, 133));
+    CHECK(!save_bit(dex->saves[0].dex_caught, 495) && save_bit(dex->saves[0].dex_seen, 495));
+    CHECK(!save_bit(dex->saves[0].dex_seen, 25));
     free(sav);
 }
 
@@ -266,10 +315,16 @@ static void test_gen3(Dex *dex)
 
     fill_pk3(party, 100, 0x01020304u, 1, 1000, 0x10, 0x20, 16);
     fill_pk3(box, 80, 0x22222222u, 4, 1059860, 0x10, 0x20, 0);
+    CHECK(pv_decrypt3(party));
+    pv_write16(party + 0x46, (uint16_t)(4u << 11));
+    pv_refresh_checksum3(party);
+    pv_encrypt3(party);
     memcpy(sav + 0x1000 + 0x238, party, sizeof party);
     sav[0x1000 + 0x234] = 1;
     /* Section 5 is the first storage section. Box data starts 4 bytes in. */
     memcpy(sav + 5 * 0x1000 + 4, box, sizeof box);
+    set_save_bit(sav + 0x28, 1);
+    set_save_bit(sav + 0x5C, 7);
 
     for (i = 0; i < 14; i++) {
         pv_write16(sav + i * 0x1000 + 0xFF4, (uint16_t)i);
@@ -291,6 +346,10 @@ static void test_gen3(Dex *dex)
     CHECK(find_species(dex, 1)->flags & MON_PARTY);
     CHECK(find_species(dex, 4) && find_species(dex, 4)->level == 100);
     CHECK(find_species(dex, 4)->box == 0);
+    CHECK(find_species(dex, 1)->ball == 4 && find_species(dex, 1)->met_month == 0);
+    CHECK(save_bit(dex->saves[0].dex_caught, 1) && save_bit(dex->saves[0].dex_seen, 1));
+    CHECK(!save_bit(dex->saves[0].dex_caught, 7) && save_bit(dex->saves[0].dex_seen, 7));
+    CHECK(!save_bit(dex->saves[0].dex_seen, 4));
     free(sav);
 }
 
@@ -302,6 +361,7 @@ static void test_b2w2(Dex *dex)
     fill_pk45(party, 220, 11, 494, 1250000, 3, 3, 0, 70);
     sav[0x18E04] = 1;
     memcpy(sav + 0x18E08, party, sizeof party);
+    set_save_bit(sav + 0x21400 + 0x08, 494);
     seal_gen5(sav, 0x26000, 0x94, 0x25F34, 2);
 
     dex_clear(dex);
@@ -310,6 +370,7 @@ static void test_b2w2(Dex *dex)
     CHECK(strcmp(dex->saves[0].game, "B2/W2") == 0);
     CHECK(dex->mons[0].species == 494);
     CHECK(dex->mons[0].level == 70);
+    CHECK(save_bit(dex->saves[0].dex_caught, 494) && save_bit(dex->saves[0].dex_seen, 494));
     free(sav);
 }
 
