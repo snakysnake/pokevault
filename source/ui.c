@@ -23,6 +23,11 @@ enum {
     VIEW_DEX = 0,
     VIEW_COPIES = 1,
     VIEW_FILTER = 2,
+    PAGE_HOME = 0,
+    PAGE_DEX = 1,
+    PAGE_GAMES = 2,
+    PAGE_PROGRESS = 3,
+    GAME_PAGE = 10,
     FILTER_CAUGHT = 0,
     FILTER_SEEN = 1,
     FILTER_DEX = 2,
@@ -52,6 +57,10 @@ static int dex_cursor;
 static int dex_scroll;
 static int copy_cursor;
 static int copy_scroll;
+static int page = PAGE_HOME;
+static int home_cursor;
+static int game_cursor;
+static int game_scroll;
 static int view = VIEW_DEX;
 static int caught;
 static int filter_caught;
@@ -1162,6 +1171,354 @@ static void draw_filter_note(const Dex *dex)
     }
 }
 
+static int dex_owned_count(const SaveInfo *info)
+{
+    int i;
+    int n = 0;
+    for (i = 0; i < NATIONAL_DEX; i++)
+        n += (info->dex_caught[i >> 3] >> (i & 7)) & 1;
+    return n;
+}
+
+static const char *profile_name(const SaveInfo *info)
+{
+    if (info->trainer[0])
+        return info->trainer;
+    if (info->name[0])
+        return info->name;
+    if (info->game[0])
+        return info->game;
+    return "Save";
+}
+
+static void format_money(uint32_t value, char *out, size_t cap)
+{
+    char digits[16];
+    char grouped[24];
+    int n;
+    int i;
+    int g = 0;
+    snprintf(digits, sizeof digits, "%u", (unsigned)value);
+    n = text_len(digits);
+    if (g + 1 < (int)sizeof grouped)
+        grouped[g++] = '$';
+    for (i = 0; i < n && g + 1 < (int)sizeof grouped; i++) {
+        if (i > 0 && (n - i) % 3 == 0 && g + 1 < (int)sizeof grouped)
+            grouped[g++] = ',';
+        grouped[g++] = digits[i];
+    }
+    grouped[g] = 0;
+    snprintf(out, cap, "%s", grouped);
+}
+
+static void format_play(const SaveInfo *info, char *out, size_t cap)
+{
+    unsigned minutes = info->minutes;
+    unsigned seconds = info->seconds;
+    if (minutes > 59)
+        minutes = 59;
+    if (seconds > 59)
+        seconds = 59;
+    snprintf(out, cap, "%u:%02u:%02u", info->hours, minutes, seconds);
+}
+
+static void draw_home(void)
+{
+    static const char *const names[3] = {"Pokedex", "Games", "Progress"};
+    int i;
+    title_row(0, "PokeVault", "");
+    rule_row(1);
+    for (i = 0; i < 3; i++) {
+        int on = i == home_cursor;
+        at(3 + i, 0);
+        emit(on ? INK_GOLD : INK_CREAM, on ? ">" : "", 2);
+        emit(on ? INK_GOLD : INK_CREAM, names[i], 16);
+    }
+}
+
+static void draw_home_note(void)
+{
+    at(8, 0);
+    use_ink(INK_CREAM);
+    if (home_cursor == 0) {
+        fputs("Every species, stored", stdout);
+        at(9, 0);
+        fputs("or still missing.", stdout);
+    } else if (home_cursor == 1) {
+        fputs("Trainer, money, play", stdout);
+        at(9, 0);
+        fputs("time, and Pokedex.", stdout);
+    } else {
+        fputs("Stored fills the bar", stdout);
+        at(9, 0);
+        fputs("to 100%. Shiny goes", stdout);
+        at(10, 0);
+        fputs("past that.", stdout);
+    }
+    at(20, 0);
+    use_ink(INK_MUTED);
+    fputs("A open", stdout);
+    at(21, 0);
+    fputs("SELECT exit", stdout);
+}
+
+static void draw_games(const Dex *dex)
+{
+    int last;
+    int i;
+    title_row(0, "Games", "");
+    rule_row(1);
+    if (dex->save_count <= 0) {
+        at(3, 0);
+        use_ink(INK_MUTED);
+        fputs("No saves.", stdout);
+        return;
+    }
+    clamp_cursor(&game_cursor, &game_scroll, dex->save_count, GAME_PAGE);
+    last = game_scroll + GAME_PAGE;
+    if (last > dex->save_count)
+        last = dex->save_count;
+    for (i = game_scroll; i < last; i++) {
+        const SaveInfo *info = &dex->saves[i];
+        char money[16];
+        char play[16];
+        char dexn[12];
+        int row = 2 + (i - game_scroll) * 2;
+        int on = i == game_cursor;
+        format_money(info->money, money, sizeof money);
+        format_play(info, play, sizeof play);
+        snprintf(dexn, sizeof dexn, "Dex %d", dex_owned_count(info));
+        at(row, 0);
+        emit(on ? INK_GOLD : INK_CREAM, on ? ">" : "", 2);
+        emit(on ? INK_GOLD : INK_CREAM, profile_name(info), 20);
+        emit_right(on ? INK_GOLD : INK_MUTED, info->game, 8);
+        at(row + 1, 0);
+        emit(INK_MUTED, "", 2);
+        emit(INK_GOLD, money, 10);
+        emit(INK_CREAM, play, 10);
+        emit_right(INK_CREAM, dexn, 8);
+    }
+}
+
+static void draw_game_card(const Dex *dex)
+{
+    const SaveInfo *info;
+    char money[16];
+    char play[16];
+    if (dex->save_count <= 0) {
+        at(8, 0);
+        use_ink(INK_MUTED);
+        fputs("Put .sav files in", stdout);
+        at(9, 0);
+        fputs("roms/nds/saves", stdout);
+        at(10, 0);
+        fputs("or roms/gba.", stdout);
+        at(21, 0);
+        fputs("B back       SELECT exit", stdout);
+        return;
+    }
+    info = &dex->saves[game_cursor];
+    format_money(info->money, money, sizeof money);
+    format_play(info, play, sizeof play);
+    at(1, 0);
+    use_ink(INK_GOLD);
+    fputs(profile_name(info), stdout);
+    at(2, 0);
+    use_ink(INK_CREAM);
+    emit(INK_CREAM, info->name[0] ? info->name : info->game, COLS);
+    at(3, 0);
+    use_ink(INK_MUTED);
+    fputs(info->game, stdout);
+    at(5, 0);
+    use_ink(INK_MUTED);
+    fputs("Money", stdout);
+    at(6, 0);
+    use_ink(INK_GOLD);
+    fputs(money, stdout);
+    at(8, 0);
+    use_ink(INK_MUTED);
+    fputs("Play time", stdout);
+    at(9, 0);
+    use_ink(INK_CREAM);
+    fputs(play, stdout);
+    at(11, 0);
+    use_ink(INK_MUTED);
+    fputs("Pokedex", stdout);
+    at(12, 0);
+    use_ink(INK_CREAM);
+    printf("%d caught", dex_owned_count(info));
+    at(21, 0);
+    use_ink(INK_MUTED);
+    fputs("B back       SELECT exit", stdout);
+}
+
+static void tally_progress(const Dex *dex, int *shiny, int *stored, int *in_dex, int *seen, int *unseen)
+{
+    int i;
+    *shiny = 0;
+    *stored = 0;
+    *in_dex = 0;
+    *seen = 0;
+    *unseen = 0;
+    for (i = 0; i < row_count; i++) {
+        int st;
+        int sh;
+        int saw;
+        int owned;
+        measure_species(dex, &rows[i], &st, &sh, &saw, &owned);
+        if (sh)
+            (*shiny)++;
+        else if (st > 0)
+            (*stored)++;
+        else if (owned)
+            (*in_dex)++;
+        else if (saw)
+            (*seen)++;
+        else
+            (*unseen)++;
+    }
+}
+
+static int percent_of(int part, int total)
+{
+    if (total <= 0 || part <= 0)
+        return 0;
+    if (part >= total)
+        return 100;
+    return part * 100 / total;
+}
+
+static void fill_px(int ink, int px)
+{
+    use_ink(ink);
+    while (px >= 8) {
+        putchar(0x18);
+        px -= 8;
+    }
+    if (px > 0)
+        putchar(0x10 + px);
+}
+
+/* counts[0..4] are shiny, stored, in dex, seen, not seen. The last stays empty. */
+static void draw_progress_bar(int row, const int *counts, const int *inks, int total)
+{
+    int width = COLS * 8;
+    int px[5];
+    int rem[5];
+    int used = 0;
+    int left;
+    int i;
+    for (i = 0; i < 5; i++) {
+        px[i] = 0;
+        rem[i] = 0;
+    }
+    if (total > 0) {
+        for (i = 0; i < 5; i++) {
+            px[i] = counts[i] * width / total;
+            rem[i] = counts[i] * width % total;
+            used += px[i];
+        }
+        left = width - used;
+        while (left > 0) {
+            int best = 0;
+            for (i = 1; i < 5; i++) {
+                if (rem[i] > rem[best])
+                    best = i;
+            }
+            px[best]++;
+            rem[best] = -1;
+            left--;
+        }
+    }
+    at(row, 0);
+    for (i = 0; i < 4; i++)
+        fill_px(inks[i], px[i]);
+}
+
+static void legend_line(int row, int ink, const char *label, int count)
+{
+    char num[8];
+    snprintf(num, sizeof num, "%d", count);
+    at(row, 0);
+    use_ink(ink);
+    putchar(0x18);
+    putchar(' ');
+    emit(INK_CREAM, label, 16);
+    emit_right(INK_GOLD, num, 6);
+}
+
+static int list_filtered(const Dex *dex)
+{
+    return filter_caught || filter_seen || filter_dex || filter_shiny || versions_narrowed(dex);
+}
+
+static void draw_progress(const Dex *dex)
+{
+    int shiny;
+    int stored;
+    int in_dex;
+    int seen;
+    int unseen;
+    int total = row_count;
+    int boxed;
+    int counts[5];
+    int inks[4];
+    char right[12];
+    tally_progress(dex, &shiny, &stored, &in_dex, &seen, &unseen);
+    boxed = shiny + stored;
+    snprintf(right, sizeof right, "%d%%", percent_of(boxed, total));
+    title_row(0, "Progress", right);
+    rule_row(1);
+    at(3, 0);
+    use_ink(INK_MUTED);
+    fputs("In a box", stdout);
+    at(3, 18);
+    use_ink(INK_GOLD);
+    printf("%d / %d", boxed, total);
+    counts[0] = shiny;
+    counts[1] = stored;
+    counts[2] = in_dex;
+    counts[3] = seen;
+    counts[4] = unseen;
+    inks[0] = INK_SHINY;
+    inks[1] = INK_GOLD;
+    inks[2] = 10;
+    inks[3] = INK_MUTED;
+    draw_progress_bar(5, counts, inks, total);
+    at(7, 0);
+    use_ink(INK_MUTED);
+    fputs("Shiny", stdout);
+    at(7, 18);
+    use_ink(INK_SHINY);
+    printf("%d / %d", shiny, total);
+    legend_line(9, INK_SHINY, "Shiny", shiny);
+    legend_line(10, INK_GOLD, "In box", stored);
+    legend_line(11, 10, "In dex", in_dex);
+    legend_line(12, INK_MUTED, "Seen", seen);
+    legend_line(13, 0, "Not seen", unseen);
+}
+
+static void draw_progress_note(const Dex *dex)
+{
+    at(8, 0);
+    use_ink(INK_CREAM);
+    fputs("One bar for the list.", stdout);
+    at(10, 0);
+    fputs("Stored is 100%.", stdout);
+    at(11, 0);
+    fputs("Shiny is the mark", stdout);
+    at(12, 0);
+    fputs("past that.", stdout);
+    if (list_filtered(dex)) {
+        at(14, 0);
+        use_ink(INK_MUTED);
+        fputs("Uses the current list.", stdout);
+    }
+    at(21, 0);
+    use_ink(INK_MUTED);
+    fputs("B back       SELECT exit", stdout);
+}
+
 static void draw_controls(const Dex *dex)
 {
     int owned = view == VIEW_DEX && dex_cursor >= 0 && dex_cursor < row_count
@@ -1177,12 +1534,34 @@ static void draw_controls(const Dex *dex)
     else
         fputs("X filter", stdout);
     at(21, 0);
-    fputs("SELECT exit", stdout);
+    fputs("B menu       SELECT exit", stdout);
 }
 
 static void draw(const Dex *dex)
 {
     int copies = 0;
+    if (page != PAGE_DEX) {
+        consoleSelect(&top_console);
+        consoleClear();
+        use_ink(INK_CREAM);
+        if (page == PAGE_GAMES)
+            draw_games(dex);
+        else if (page == PAGE_PROGRESS)
+            draw_progress(dex);
+        else
+            draw_home();
+        consoleSelect(&bottom_console);
+        consoleClear();
+        use_ink(INK_CREAM);
+        if (page == PAGE_GAMES)
+            draw_game_card(dex);
+        else if (page == PAGE_PROGRESS)
+            draw_progress_note(dex);
+        else
+            draw_home_note();
+        sprites_hide();
+        return;
+    }
     if (view == VIEW_COPIES && dex_cursor >= 0 && dex_cursor < row_count)
         copies = enabled_stored(dex, &rows[dex_cursor]);
     if (view == VIEW_COPIES && copies <= 0)
@@ -1261,6 +1640,10 @@ void ui_run(Dex *dex)
     filter_scroll = 0;
     dex_sort(dex, 1);
     refresh_rows(dex);
+    page = PAGE_HOME;
+    home_cursor = 0;
+    game_cursor = 0;
+    game_scroll = 0;
     view = VIEW_DEX;
     dex_cursor = 0;
     dex_scroll = 0;
@@ -1282,7 +1665,50 @@ void ui_run(Dex *dex)
         if (hit & KEY_SELECT)
             return;
 
-        if (view == VIEW_FILTER) {
+        if (page == PAGE_HOME) {
+            if (hit & KEY_A) {
+                page = home_cursor + 1;
+                if (page == PAGE_GAMES)
+                    clamp_cursor(&game_cursor, &game_scroll, dex->save_count, GAME_PAGE);
+                music_click();
+                dirty = 1;
+            } else if (down & (KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT)) {
+                int before = home_cursor;
+                if (down & (KEY_UP | KEY_LEFT))
+                    home_cursor--;
+                if (down & (KEY_DOWN | KEY_RIGHT))
+                    home_cursor++;
+                if (home_cursor < 0)
+                    home_cursor = 0;
+                if (home_cursor > 2)
+                    home_cursor = 2;
+                if (home_cursor != before) {
+                    music_click();
+                    dirty = 1;
+                }
+            }
+        } else if (page == PAGE_GAMES) {
+            if (hit & KEY_B) {
+                page = PAGE_HOME;
+                music_click();
+                dirty = 1;
+            } else if (dex->save_count > 0
+                       && (down & (KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT | KEY_L | KEY_R))) {
+                int before = game_cursor;
+                nudge(&game_cursor, dex->save_count, GAME_PAGE, down);
+                clamp_cursor(&game_cursor, &game_scroll, dex->save_count, GAME_PAGE);
+                if (game_cursor != before) {
+                    music_click();
+                    dirty = 1;
+                }
+            }
+        } else if (page == PAGE_PROGRESS) {
+            if (hit & KEY_B) {
+                page = PAGE_HOME;
+                music_click();
+                dirty = 1;
+            }
+        } else if (view == VIEW_FILTER) {
             if (hit & (KEY_B | KEY_X)) {
                 uint16_t species = 0;
                 int keep = 0;
@@ -1317,6 +1743,10 @@ void ui_run(Dex *dex)
             dirty = 1;
         } else if (hit & KEY_B && view == VIEW_COPIES) {
             view = VIEW_DEX;
+            music_click();
+            dirty = 1;
+        } else if (hit & KEY_B && view == VIEW_DEX) {
+            page = PAGE_HOME;
             music_click();
             dirty = 1;
         } else if (hit & KEY_A && view == VIEW_DEX && row_count > 0

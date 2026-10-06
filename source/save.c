@@ -395,6 +395,150 @@ static int begin_save(Dex *dex, const char *name, const char *game)
     return dex->save_count++;
 }
 
+static void set_profile(SaveInfo *info, const char *trainer, uint32_t money,
+                        unsigned hours, unsigned minutes, unsigned seconds)
+{
+    size_t i;
+    if (!info)
+        return;
+    for (i = 0; i < sizeof info->trainer - 1 && trainer && trainer[i]; i++)
+        info->trainer[i] = trainer[i];
+    info->trainer[i] = 0;
+    info->money = money;
+    info->hours = (uint16_t)(hours > 65535u ? 65535u : hours);
+    info->minutes = (uint8_t)minutes;
+    info->seconds = (uint8_t)seconds;
+}
+
+/* Generation 3 English charset. 0xFF ends the name. 0x00 is a space. */
+static char g3_char(unsigned char c)
+{
+    if (c == 0x00)
+        return ' ';
+    if (c >= 0xA1 && c <= 0xAA)
+        return (char)('0' + (c - 0xA1));
+    if (c >= 0xBB && c <= 0xD4)
+        return (char)('A' + (c - 0xBB));
+    if (c >= 0xD5 && c <= 0xEE)
+        return (char)('a' + (c - 0xD5));
+    switch (c) {
+    case 0xAB: return '!';
+    case 0xAC: return '?';
+    case 0xAD: return '.';
+    case 0xAE: return '-';
+    case 0xB8: return ',';
+    case 0xBA: return '/';
+    default: return 0;
+    }
+}
+
+static void decode_g3_name(const uint8_t *src, int n, char *out, int cap)
+{
+    int i;
+    int w = 0;
+    if (cap <= 0)
+        return;
+    for (i = 0; i < n && w + 1 < cap; i++) {
+        char c;
+        if (src[i] == 0xFF)
+            break;
+        c = g3_char(src[i]);
+        if (c == 0)
+            continue;
+        out[w++] = c;
+    }
+    while (w > 0 && out[w - 1] == ' ')
+        w--;
+    out[w] = 0;
+}
+
+static char fold_latin(uint16_t u)
+{
+    if (u >= 0x20 && u < 0x7F)
+        return (char)u;
+    switch (u) {
+    case 0xC0: case 0xC1: case 0xC2: case 0xC3: case 0xC4: case 0xC5: return 'A';
+    case 0xC8: case 0xC9: case 0xCA: case 0xCB: return 'E';
+    case 0xCC: case 0xCD: case 0xCE: case 0xCF: return 'I';
+    case 0xD2: case 0xD3: case 0xD4: case 0xD5: case 0xD6: return 'O';
+    case 0xD9: case 0xDA: case 0xDB: case 0xDC: return 'U';
+    case 0xDF: return 's';
+    case 0xE0: case 0xE1: case 0xE2: case 0xE3: case 0xE4: case 0xE5: return 'a';
+    case 0xE8: case 0xE9: case 0xEA: case 0xEB: return 'e';
+    case 0xEC: case 0xED: case 0xEE: case 0xEF: return 'i';
+    case 0xF2: case 0xF3: case 0xF4: case 0xF5: case 0xF6: return 'o';
+    case 0xF9: case 0xFA: case 0xFB: case 0xFC: return 'u';
+    default: return 0;
+    }
+}
+
+static void decode_utf16_name(const uint8_t *src, int bytes, char *out, int cap)
+{
+    int i = 0;
+    int w = 0;
+    if (cap <= 0)
+        return;
+    while (i + 1 < bytes && w + 1 < cap) {
+        uint16_t u = (uint16_t)(src[i] | (src[i + 1] << 8));
+        char c;
+        i += 2;
+        if (u == 0 || u == 0xFFFF)
+            break;
+        c = fold_latin(u);
+        if (c == 0)
+            continue;
+        out[w++] = c;
+    }
+    while (w > 0 && out[w - 1] == ' ')
+        w--;
+    out[w] = 0;
+}
+
+/* Trainer block: name, then id, money at +0x14, play time at +0x22. */
+static void read_profile4(SaveInfo *info, const uint8_t *general, int general_size, int trainer)
+{
+    char name[16];
+    if (!general || trainer < 0 || trainer + 0x26 > general_size)
+        return;
+    decode_utf16_name(general + trainer, 16, name, (int)sizeof name);
+    set_profile(info, name, pv_read32(general + trainer + 0x14),
+                pv_read16(general + trainer + 0x22),
+                general[trainer + 0x24], general[trainer + 0x25]);
+}
+
+/* Name is 16 bytes into the player block. Hours follow 0x20 bytes later. */
+static void read_profile5(SaveInfo *info, const uint8_t *sav, int sav_len,
+                          int name_ofs, int money_ofs)
+{
+    char name[16];
+    uint32_t money = 0;
+    if (!sav || name_ofs < 0 || name_ofs + 0x24 > sav_len)
+        return;
+    decode_utf16_name(sav + name_ofs, 16, name, (int)sizeof name);
+    if (money_ofs >= 0 && money_ofs + 4 <= sav_len)
+        money = pv_read32(sav + money_ofs);
+    set_profile(info, name, money, pv_read16(sav + name_ofs + 0x20),
+                sav[name_ofs + 0x22], sav[name_ofs + 0x23]);
+}
+
+static void read_profile3(SaveInfo *info, const uint8_t *small, const uint8_t *large, const char *game)
+{
+    char name[16];
+    uint32_t key = 0;
+    int money_ofs = 0x490;
+    if (!small || !large)
+        return;
+    decode_g3_name(small, 7, name, (int)sizeof name);
+    if (game && strcmp(game, "FR/LG") == 0) {
+        money_ofs = 0x290;
+        key = pv_read32(small + 0xF20);
+    } else if (game && strcmp(game, "E") == 0) {
+        key = pv_read32(small + 0xAC);
+    }
+    set_profile(info, name, pv_read32(large + money_ofs) ^ key,
+                pv_read16(small + 0x0E), small[0x10], small[0x11]);
+}
+
 static void add_mon(Dex *dex, int save_index, uint16_t species, uint8_t level,
                     uint8_t flags, uint8_t box, uint8_t slot, const uint16_t moves[4],
                     uint32_t ivs, const uint8_t evs[6], uint8_t nature, uint8_t form,
@@ -682,6 +826,9 @@ static void read_gen4(Dex *dex, const char *name, const uint8_t *data, size_t le
     save_index = begin_save(dex, name, game);
     if (save_index < 0)
         return;
+    /* Platinum's trainer block sits 4 bytes later than Diamond, Pearl, and HG/SS. */
+    read_profile4(&dex->saves[save_index], general, general_size,
+                  strcmp(game, "Pt") == 0 ? 0x68 : 0x64);
 
     count = general[party - 4];
     if (count < 0)
@@ -753,6 +900,10 @@ static void read_gen5(Dex *dex, const char *name, const uint8_t *data, int base,
 
     if (save_index < 0)
         return;
+    /* Black and White keep money at 0x21200. Black 2 and White 2 use 0x21100. */
+    read_profile5(&dex->saves[save_index], sav,
+                  strcmp(game, "B2/W2") == 0 ? 0x26000 : 0x24000,
+                  0x19404, strcmp(game, "B2/W2") == 0 ? 0x21100 : 0x21200);
 
     count = sav[0x18E00 + 4];
     if (count < 0)
@@ -892,6 +1043,7 @@ static void read_gen3(Dex *dex, const char *name, const uint8_t *data, size_t le
     save_index = begin_save(dex, name, game);
     if (save_index < 0)
         return;
+    read_profile3(&dex->saves[save_index], small, large, game);
 
     if (strcmp(game, "FR/LG") == 0) {
         party_count_ofs = 0x034;

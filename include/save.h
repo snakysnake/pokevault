@@ -54,8 +54,14 @@ typedef struct {
 
 typedef struct {
     char name[32];
+    /* In-game trainer name. Empty when the save did not have one. */
+    char trainer[16];
     char game[8];
+    uint32_t money;
+    uint16_t hours;
     uint16_t count;
+    uint8_t minutes;
+    uint8_t seconds;
     /* Pokédex registration for this save, separate from Pokémon still stored. */
     uint8_t dex_caught[DEX_BYTES];
     uint8_t dex_seen[DEX_BYTES];
