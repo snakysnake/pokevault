@@ -1,4 +1,5 @@
 ui.o: /Users/lucacaspari/Development/pokevault/source/ui.c \
+ /Users/lucacaspari/Development/pokevault/include/flavor.h \
  /Users/lucacaspari/Development/pokevault/include/moves.h \
  /Users/lucacaspari/Development/pokevault/include/music.h \
  /Users/lucacaspari/Development/pokevault/include/save.h \
@@ -121,6 +122,7 @@ ui.o: /Users/lucacaspari/Development/pokevault/source/ui.c \
  /opt/devkitpro/libnds/include/nds/arm9/video.h \
  /opt/devkitpro/libnds/include/nds/arm9/videoGL.h \
  /Users/lucacaspari/Development/pokevault/source/font.inc
+/Users/lucacaspari/Development/pokevault/include/flavor.h:
 /Users/lucacaspari/Development/pokevault/include/moves.h:
 /Users/lucacaspari/Development/pokevault/include/music.h:
 /Users/lucacaspari/Development/pokevault/include/save.h:

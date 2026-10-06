@@ -1,3 +1,4 @@
+#include "flavor.h"
 #include "moves.h"
 #include "music.h"
 #include "save.h"
@@ -39,7 +40,13 @@ enum {
     INK_GOLD = 11,
     INK_CREAM = 15,
     GLYPH_BAR = 0x10,
-    GLYPH_RULE = 0x19
+    GLYPH_RULE = 0x19,
+    GLYPH_BOX = 0x1A,
+    GLYPH_BOX_X = 0x1B,
+    CARD_STATS = 0,
+    CARD_ENTRY = 1,
+    CARD_WEAK = 2,
+    CARD_PAGES = 3
 };
 
 /* Glyphs 0x11-0x18 are stat bars. 0x19 is the title rule.
@@ -57,6 +64,7 @@ static int dex_cursor;
 static int dex_scroll;
 static int copy_cursor;
 static int copy_scroll;
+static int copy_page;
 static int page = PAGE_HOME;
 static int home_cursor;
 static int game_cursor;
@@ -746,85 +754,44 @@ static void draw_copy_list(const Dex *dex, const SpeciesRow *row)
     }
 }
 
-/* Lists which saves have this species registered. Stops before the hint rows. */
-static int draw_pokedex_lines(const Dex *dex, const SpeciesRow *row, int line)
+/* The sprite sits on the right of these text rows. */
+static int line_cols(int row)
 {
-    int i;
-    int shown = 0;
-    int hidden = 0;
-
-    if (line > 17)
-        return line;
-    at(line++, 0);
-    use_ink(INK_MUTED);
-    fputs("Pokedex", stdout);
-    for (i = 0; i < dex->save_count; i++) {
-        int got = dex_bit(dex->saves[i].dex_caught, row->species);
-        int seen = dex_bit(dex->saves[i].dex_seen, row->species);
-        char buf[40];
-        if (!filter_version[i] || (!got && !seen))
-            continue;
-        if (line > 17) {
-            hidden++;
-            continue;
-        }
-        snprintf(buf, sizeof buf, "%-16.16s %s", dex->saves[i].name, got ? "Caught" : "Seen");
-        at(line++, 0);
-        use_ink(got ? INK_CREAM : INK_MUTED);
-        fputs(buf, stdout);
-        shown++;
-    }
-    if (shown == 0 && line <= 17) {
-        at(line++, 0);
-        use_ink(INK_MUTED);
-        fputs("Not registered", stdout);
-    } else if (hidden > 0 && line <= 17) {
-        at(line++, 0);
-        use_ink(INK_MUTED);
-        printf("+%d more", hidden);
-    }
-    return line;
+    if (row >= 2 && row <= 9)
+        return 22;
+    return COLS;
 }
 
-static void draw_missing_card(const Dex *dex, const SpeciesRow *row)
+static void draw_types_at(int row, unsigned type1, unsigned type2)
 {
-    unsigned type = species_type(row->species, 0);
-    int seen;
-    int in_dex;
-    int ignore;
-    int line = 3;
-    measure_species(dex, row, &ignore, &ignore, &seen, &in_dex);
-    (void)ignore;
-
-    at(0, 0);
-    use_ink(INK_GOLD);
-    printf("#%03u ", row->species);
-    use_ink(INK_CREAM);
-    fputs(species_name(row->species), stdout);
-
-    at(1, 0);
-    use_ink(type_ink(type));
-    fputs(type_name(type), stdout);
-
-    at(line++, 0);
-    use_ink(INK_MUTED);
-    if (in_dex)
-        fputs("Caught, not stored", stdout);
-    else if (seen)
-        fputs("Seen", stdout);
-    else
-        fputs("Not caught", stdout);
-    if (dex->save_count == 0) {
-        at(line++, 0);
-        fputs("Put .sav files in", stdout);
-        at(line++, 0);
-        fputs("roms/nds/saves", stdout);
-        at(line++, 0);
-        fputs("or roms/gba.", stdout);
-    } else {
-        draw_pokedex_lines(dex, row, line);
+    at(row, 0);
+    use_ink(type_ink(type1));
+    fputs(type_name(type1), stdout);
+    if (type2 < TYPE_COUNT) {
+        putchar(' ');
+        use_ink(type_ink(type2));
+        fputs(type_name(type2), stdout);
     }
-    sprites_show(row->species, 0, 0);
+}
+
+static void draw_check(int row, int done, int ink, const char *label)
+{
+    at(row, 0);
+    use_ink(done ? ink : INK_CREAM);
+    putchar(done ? GLYPH_BOX_X : GLYPH_BOX);
+    putchar(' ');
+    use_ink(done ? ink : INK_MUTED);
+    fputs(label, stdout);
+}
+
+/* Shiny implies caught, caught implies the Dex, and the Dex implies seen. */
+static void draw_completion(int row, int shiny, int stored, int in_dex, int seen)
+{
+    int caught = stored > 0;
+    draw_check(row, shiny, INK_SHINY, "Shiny");
+    draw_check(row + 1, caught, INK_GOLD, "Caught");
+    draw_check(row + 2, in_dex || caught, INK_CREAM, "In Dex");
+    draw_check(row + 3, seen || in_dex || caught, INK_CREAM, "Seen");
 }
 
 static void draw_species_card(const Dex *dex, const SpeciesRow *row)
@@ -832,28 +799,15 @@ static void draw_species_card(const Dex *dex, const SpeciesRow *row)
     const MonRef *face;
     int stored = 0;
     int shiny = 0;
+    int seen = 0;
+    int in_dex = 0;
     int eggs = 0;
     int i;
-    int line = 2;
-    char buf[32];
-    unsigned type = species_type(row->species, 0);
+    int line = 3;
+    char buf[16];
 
     face = best_mon(dex, row);
-    if (!face) {
-        draw_missing_card(dex, row);
-        return;
-    }
-
-    for (i = 0; i < row->count; i++) {
-        const MonRef *mon = &dex->mons[row->first + i];
-        if (!version_on(dex, mon->save_index))
-            continue;
-        stored++;
-        if (mon->flags & MON_SHINY)
-            shiny++;
-        if (mon->flags & MON_EGG)
-            eggs++;
-    }
+    measure_species(dex, row, &stored, &shiny, &seen, &in_dex);
 
     at(0, 0);
     use_ink(INK_GOLD);
@@ -861,37 +815,53 @@ static void draw_species_card(const Dex *dex, const SpeciesRow *row)
     use_ink(INK_CREAM);
     fputs(species_name(row->species), stdout);
 
-    at(1, 0);
-    use_ink(type_ink(type));
-    fputs(type_name(type), stdout);
-    snprintf(buf, sizeof buf, "x%d", stored);
-    at(1, COLS - text_len(buf));
-    use_ink(INK_GOLD);
-    fputs(buf, stdout);
+    draw_types_at(1, species_type(row->species, 0), species_type2(row->species, 0));
+    if (stored > 0) {
+        snprintf(buf, sizeof buf, "x%d", stored);
+        at(1, COLS - text_len(buf));
+        use_ink(INK_GOLD);
+        fputs(buf, stdout);
+    }
 
-    if (face->flags & MON_EGG) {
-        at(line++, 0);
-        use_ink(INK_CREAM);
-        fputs("Egg", stdout);
+    if (face) {
+        for (i = 0; i < row->count; i++) {
+            const MonRef *mon = &dex->mons[row->first + i];
+            if (version_on(dex, mon->save_index) && (mon->flags & MON_EGG))
+                eggs++;
+        }
+        if (face->flags & MON_EGG) {
+            at(line++, 0);
+            use_ink(INK_CREAM);
+            fputs("Egg", stdout);
+        } else {
+            at(line++, 0);
+            use_ink(INK_MUTED);
+            fputs("Best", stdout);
+            use_ink(INK_CREAM);
+            printf(" Lv %u", face->level);
+        }
+        if (eggs > 0) {
+            at(line++, 0);
+            use_ink(INK_MUTED);
+            printf("Eggs x%d", eggs);
+        }
+        line++;
+        sprites_show(face->species, (face->flags & MON_SHINY) != 0, (face->flags & MON_EGG) != 0);
     } else {
+        sprites_show(row->species, 0, 0);
+    }
+
+    draw_completion(line, shiny, stored, in_dex, seen);
+    if (!face && dex->save_count == 0) {
+        line += 5;
         at(line++, 0);
         use_ink(INK_MUTED);
-        fputs("Best", stdout);
-        use_ink(INK_CREAM);
-        printf(" Lv %u", face->level);
-    }
-    if (shiny > 0) {
+        fputs("Put .sav files in", stdout);
         at(line++, 0);
-        use_ink(INK_SHINY);
-        printf("Shiny x%d", shiny);
-    }
-    if (eggs > 0) {
+        fputs("roms/nds/saves", stdout);
         at(line++, 0);
-        use_ink(INK_MUTED);
-        printf("Eggs x%d", eggs);
+        fputs("or roms/gba.", stdout);
     }
-    draw_pokedex_lines(dex, row, line + 1);
-    sprites_show(face->species, (face->flags & MON_SHINY) != 0, (face->flags & MON_EGG) != 0);
 }
 
 static const char *ball_name(unsigned ball)
@@ -952,17 +922,8 @@ static void draw_move(int row, unsigned move)
     fputs(move_name(move), stdout);
 }
 
-static void draw_copy_card(const Dex *dex, const MonRef *mon)
+static void draw_mon_title(const MonRef *mon)
 {
-    const SaveInfo *info = save_of(dex, mon);
-    uint16_t st[6];
-    unsigned formed;
-    int peak;
-    int i;
-    int egg = (mon->flags & MON_EGG) != 0;
-    char buf[40];
-    static const char *const labels[6] = {"HP", "Atk", "Def", "SpA", "SpD", "Spe"};
-
     at(0, 0);
     use_ink(INK_CREAM);
     emit(INK_CREAM, species_name(mon->species), 22);
@@ -970,8 +931,105 @@ static void draw_copy_card(const Dex *dex, const MonRef *mon)
         use_ink(INK_SHINY);
         fputs("Shiny", stdout);
     }
+    draw_types_at(1, species_type(mon->species, mon->form), species_type2(mon->species, mon->form));
+}
 
-    at(1, 0);
+static void draw_card_pager(int which)
+{
+    static const char *const names[CARD_PAGES] = {"Stats", "Entry", "Weak"};
+    const char *name = names[which >= 0 && which < CARD_PAGES ? which : 0];
+    int len = text_len(name);
+    int start = (COLS - len) / 2;
+    at(21, 0);
+    use_ink(INK_MUTED);
+    fputs("L", stdout);
+    at(21, start);
+    use_ink(INK_GOLD);
+    fputs(name, stdout);
+    at(21, COLS - 1);
+    use_ink(INK_MUTED);
+    fputs("R", stdout);
+}
+
+static int draw_wrapped(int row, int last, const char *text)
+{
+    int col = 0;
+    if (!text)
+        return row;
+    while (*text && row <= last) {
+        int word = 0;
+        int width;
+        while (*text == ' ')
+            text++;
+        while (text[word] && text[word] != ' ')
+            word++;
+        if (word == 0)
+            break;
+        width = line_cols(row);
+        if (col > 0 && col + 1 + word > width) {
+            row++;
+            col = 0;
+            if (row > last)
+                break;
+            width = line_cols(row);
+        }
+        if (word > width)
+            word = width;
+        if (col > 0) {
+            at(row, col);
+            use_ink(INK_CREAM);
+            putchar(' ');
+            col++;
+        } else {
+            at(row, 0);
+            use_ink(INK_CREAM);
+        }
+        while (word > 0) {
+            putchar((unsigned char)*text++);
+            col++;
+            word--;
+        }
+    }
+    return row;
+}
+
+static int draw_type_chips(int row, const unsigned *types, int count)
+{
+    int i;
+    int col = 0;
+    for (i = 0; i < count && row <= 19; i++) {
+        const char *name = type_name(types[i]);
+        int len = text_len(name);
+        int width = line_cols(row);
+        if (col > 0 && col + 1 + len > width) {
+            row++;
+            col = 0;
+            if (row > 19)
+                break;
+            width = line_cols(row);
+        }
+        if (col > 0)
+            col++;
+        at(row, col);
+        use_ink(type_ink(types[i]));
+        fputs(name, stdout);
+        col += len;
+    }
+    return row + 1;
+}
+
+static void draw_copy_card(const Dex *dex, const MonRef *mon)
+{
+    const SaveInfo *info = save_of(dex, mon);
+    uint16_t st[6];
+    int peak;
+    int i;
+    int egg = (mon->flags & MON_EGG) != 0;
+    char buf[40];
+    static const char *const labels[6] = {"HP", "Atk", "Def", "SpA", "SpD", "Spe"};
+
+    draw_mon_title(mon);
+    at(2, 0);
     use_ink(INK_CREAM);
     if (egg)
         fputs("Egg", stdout);
@@ -979,11 +1037,6 @@ static void draw_copy_card(const Dex *dex, const MonRef *mon)
         printf("Lv %u", mon->level);
         use_ink(INK_GOLD);
         printf("  %s", nature_name(mon->nature));
-    }
-    formed = species_type(mon->species, mon->form);
-    if (formed != species_type(mon->species, 0)) {
-        use_ink(type_ink(formed));
-        printf("  %s", type_name(formed));
     }
 
     if (!egg) {
@@ -994,7 +1047,7 @@ static void draw_copy_card(const Dex *dex, const MonRef *mon)
                 peak = st[i];
         }
         for (i = 0; i < 6; i++) {
-            at(2 + i, 0);
+            at(3 + i, 0);
             use_ink(INK_MUTED);
             printf("%-3.3s ", labels[i]);
             use_ink(INK_CREAM);
@@ -1003,21 +1056,21 @@ static void draw_copy_card(const Dex *dex, const MonRef *mon)
             stat_bar(st[i], peak);
         }
         for (i = 0; i < 4; i++)
-            draw_move(9 + i, mon->moves[i]);
+            draw_move(10 + i, mon->moves[i]);
     }
 
-    at(14, 0);
+    at(15, 0);
     use_ink(INK_CREAM);
     fputs(ball_name(mon->ball), stdout);
     format_met(mon, buf, sizeof buf);
-    at(15, 0);
+    at(16, 0);
     use_ink(INK_GOLD);
     fputs(buf, stdout);
 
-    at(16, 0);
+    at(17, 0);
     use_ink(INK_CREAM);
     emit(INK_CREAM, info ? info->name : "?", COLS);
-    at(17, 0);
+    at(18, 0);
     use_ink(INK_MUTED);
     if (mon->flags & MON_PARTY)
         snprintf(buf, sizeof buf, "%s   Party %u", info ? info->game : "?", (unsigned)mon->slot + 1);
@@ -1025,7 +1078,59 @@ static void draw_copy_card(const Dex *dex, const MonRef *mon)
         snprintf(buf, sizeof buf, "%s   Box %u  slot %u",
                  info ? info->game : "?", (unsigned)mon->box + 1, (unsigned)mon->slot + 1);
     fputs(buf, stdout);
-    sprites_show(mon->species, (mon->flags & MON_SHINY) != 0, egg);
+}
+
+static void draw_copy_entry(const MonRef *mon)
+{
+    const char *text = species_flavor(mon->species);
+    draw_mon_title(mon);
+    if (!text || !text[0]) {
+        at(3, 0);
+        use_ink(INK_MUTED);
+        fputs("No entry.", stdout);
+        return;
+    }
+    draw_wrapped(3, 19, text);
+}
+
+static void draw_copy_weak(const MonRef *mon)
+{
+    unsigned type1 = species_type(mon->species, mon->form);
+    unsigned type2 = species_type2(mon->species, mon->form);
+    unsigned quad[TYPE_COUNT];
+    unsigned doub[TYPE_COUNT];
+    int quad_n = 0;
+    int doub_n = 0;
+    int attack;
+    int line = 3;
+
+    draw_mon_title(mon);
+    for (attack = 0; attack < TYPE_COUNT; attack++) {
+        int factor = type_effect((unsigned)attack, type1, type2);
+        if (factor >= 16)
+            quad[quad_n++] = (unsigned)attack;
+        else if (factor >= 8)
+            doub[doub_n++] = (unsigned)attack;
+    }
+    if (quad_n == 0 && doub_n == 0) {
+        at(line, 0);
+        use_ink(INK_CREAM);
+        fputs("No weaknesses.", stdout);
+        return;
+    }
+    if (quad_n > 0) {
+        at(line++, 0);
+        use_ink(INK_MUTED);
+        fputs("Weak x4", stdout);
+        line = draw_type_chips(line, quad, quad_n);
+        line++;
+    }
+    if (doub_n > 0 && line <= 19) {
+        at(line++, 0);
+        use_ink(INK_MUTED);
+        fputs("Weak x2", stdout);
+        draw_type_chips(line, doub, doub_n);
+    }
 }
 
 static int filter_items(const Dex *dex)
@@ -1594,12 +1699,20 @@ static void draw(const Dex *dex)
     if (view == VIEW_COPIES) {
         const SpeciesRow *row = &rows[dex_cursor];
         const MonRef *mon = enabled_mon(dex, row, copy_cursor);
-        if (mon)
-            draw_copy_card(dex, mon);
+        if (mon) {
+            if (copy_page == CARD_ENTRY)
+                draw_copy_entry(mon);
+            else if (copy_page == CARD_WEAK)
+                draw_copy_weak(mon);
+            else
+                draw_copy_card(dex, mon);
+            draw_card_pager(copy_page);
+            sprites_show(mon->species, (mon->flags & MON_SHINY) != 0, (mon->flags & MON_EGG) != 0);
+        }
     } else if (row_count > 0) {
         draw_species_card(dex, &rows[dex_cursor]);
     }
-    if (dex->truncated) {
+    if (dex->truncated && view != VIEW_COPIES) {
         at(18, 0);
         use_ink(INK_MUTED);
         fputs("List full.", stdout);
@@ -1649,6 +1762,7 @@ void ui_run(Dex *dex)
     dex_scroll = 0;
     copy_cursor = 0;
     copy_scroll = 0;
+    copy_page = CARD_STATS;
     clamp_cursor(&dex_cursor, &dex_scroll, row_count, DEX_PAGE);
     draw(dex);
 
@@ -1754,6 +1868,14 @@ void ui_run(Dex *dex)
             view = VIEW_COPIES;
             copy_cursor = 0;
             copy_scroll = 0;
+            copy_page = CARD_STATS;
+            music_click();
+            dirty = 1;
+        } else if (view == VIEW_COPIES && (hit & (KEY_L | KEY_R))) {
+            if (hit & KEY_L)
+                copy_page = (copy_page + CARD_PAGES - 1) % CARD_PAGES;
+            if (hit & KEY_R)
+                copy_page = (copy_page + 1) % CARD_PAGES;
             music_click();
             dirty = 1;
         } else if (row_count > 0 && (down & (KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT | KEY_L | KEY_R))) {
@@ -1762,7 +1884,7 @@ void ui_run(Dex *dex)
             if (view == VIEW_COPIES) {
                 int total = enabled_stored(dex, &rows[dex_cursor]);
                 before = copy_cursor;
-                nudge(&copy_cursor, total, COPY_PAGE, down);
+                nudge(&copy_cursor, total, COPY_PAGE, down & ~(KEY_L | KEY_R));
                 clamp_cursor(&copy_cursor, &copy_scroll, total, COPY_PAGE);
                 after = copy_cursor;
             } else {

@@ -1,5 +1,6 @@
 #include "crypto.h"
 #include "moves.h"
+#include "flavor.h"
 #include "save.h"
 #include "species.h"
 #include "stats.h"
@@ -612,6 +613,35 @@ static void test_types(void)
     CHECK(species_type(493, 0) == TYPE_NORMAL);
     CHECK(species_type(493, 9) == TYPE_FIRE);
     CHECK(species_type(493, 16) == TYPE_DARK);
+    CHECK(species_type2(1, 0) == TYPE_POISON);
+    CHECK(species_type2(4, 0) == TYPE_COUNT);
+    CHECK(species_type2(6, 0) == TYPE_FLYING);
+    CHECK(species_type2(35, 0) == TYPE_COUNT);
+    CHECK(species_type2(183, 0) == TYPE_COUNT);
+    CHECK(species_type2(468, 0) == TYPE_FLYING);
+    CHECK(species_type(479, 0) == TYPE_ELECTRIC);
+    CHECK(species_type2(479, 0) == TYPE_GHOST);
+    CHECK(species_type2(479, 1) == TYPE_FIRE);
+    CHECK(species_type2(351, 1) == TYPE_COUNT);
+    CHECK(species_type2(492, 0) == TYPE_COUNT);
+    CHECK(species_type2(492, 1) == TYPE_FLYING);
+    CHECK(species_type2(648, 0) == TYPE_PSYCHIC);
+    CHECK(species_type2(648, 1) == TYPE_FIGHTING);
+    CHECK(type_effect(TYPE_FIRE, TYPE_GRASS, TYPE_POISON) == 8);
+    CHECK(type_effect(TYPE_ROCK, TYPE_FIRE, TYPE_FLYING) == 16);
+    CHECK(type_effect(TYPE_ELECTRIC, TYPE_GROUND, TYPE_ROCK) == 0);
+    CHECK(type_effect(TYPE_PSYCHIC, TYPE_POISON, TYPE_FIGHTING) == 16);
+    CHECK(type_effect(TYPE_GHOST, TYPE_STEEL, TYPE_COUNT) == 2);
+    CHECK(type_effect(TYPE_DARK, TYPE_STEEL, TYPE_COUNT) == 2);
+    CHECK(type_effect(TYPE_FIGHTING, TYPE_GHOST, TYPE_DARK) == 0);
+    {
+        const char *entry = species_flavor(1);
+        CHECK(entry && entry[0]);
+        CHECK(strstr(entry, "seed") != NULL);
+        CHECK(species_flavor(649)[0] != 0);
+        CHECK(species_flavor(0)[0] == 0);
+        CHECK(species_flavor(999)[0] == 0);
+    }
     CHECK(move_type(33) == TYPE_NORMAL);
     CHECK(move_type(53) == TYPE_FIRE);
     CHECK(move_type(85) == TYPE_ELECTRIC);
