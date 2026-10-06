@@ -2,6 +2,7 @@
 #include "moves.h"
 #include "save.h"
 #include "species.h"
+#include "stats.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -382,6 +383,156 @@ static void test_moves(Dex *dex)
     free(sav);
 }
 
+static void push_mon(Dex *dex, uint16_t species, uint8_t level)
+{
+    MonRef *mon = &dex->mons[dex->mon_count];
+    memset(mon, 0, sizeof *mon);
+    mon->species = species;
+    mon->level = level;
+    mon->order = (uint16_t)dex->mon_count;
+    dex->mon_count++;
+}
+
+static void seal_gen3(uint8_t *sav)
+{
+    int i;
+    for (i = 0; i < 14; i++) {
+        pv_write16(sav + i * 0x1000 + 0xFF4, (uint16_t)i);
+        pv_write32(sav + i * 0x1000 + 0xFFC, 9);
+        pv_write16(sav + i * 0x1000 + 0xFF6, pv_checksum32(sav + i * 0x1000, 0xF80));
+    }
+}
+
+static void test_rows(Dex *dex)
+{
+    SpeciesRow rows[8];
+    int n;
+
+    dex_clear(dex);
+    push_mon(dex, 25, 10);
+    push_mon(dex, 1, 50);
+    push_mon(dex, 25, 40);
+    push_mon(dex, 6, 5);
+    dex_sort(dex, 1);
+    n = dex_species_rows(dex, rows, 8);
+    CHECK(n == 3);
+    CHECK(rows[0].species == 1 && rows[0].count == 1 && rows[0].first == 0);
+    CHECK(rows[1].species == 6 && rows[1].count == 1);
+    CHECK(rows[2].species == 25 && rows[2].count == 2 && rows[2].first == 2);
+    CHECK(dex->mons[rows[2].first].level == 40);
+    CHECK(dex->mons[rows[2].first + 1].level == 10);
+}
+
+static void test_battle_stats(Dex *dex)
+{
+    MonRef mon;
+    uint16_t st[6];
+    uint8_t *sav;
+    uint8_t party[236];
+    uint8_t g3[100];
+    const MonRef *found;
+
+    memset(&mon, 0, sizeof mon);
+    mon.species = 25;
+    mon.level = 50;
+    mon_battle_stats(&mon, st);
+    CHECK(st[0] == 95 && st[1] == 60 && st[2] == 45);
+    CHECK(st[3] == 55 && st[4] == 55 && st[5] == 95);
+
+    mon.species = 292;
+    mon.level = 100;
+    mon.ivs = 0x3FFFFFFFu;
+    mon_battle_stats(&mon, st);
+    CHECK(st[0] == 1);
+    CHECK(st[1] == 216);
+
+    mon.species = 386;
+    mon.level = 100;
+    mon.ivs = 0;
+    mon.form = 0;
+    mon_battle_stats(&mon, st);
+    CHECK(st[1] == 305);
+    mon.form = 1;
+    mon_battle_stats(&mon, st);
+    CHECK(st[1] == 365);
+    CHECK(strcmp(nature_name(3), "Adamant") == 0);
+    CHECK(strcmp(nature_name(13), "Jolly") == 0);
+    CHECK(nature_name(99)[0] == '?');
+
+    sav = calloc(1, 0x80000);
+    CHECK(sav != NULL);
+    memset(party, 0, sizeof party);
+    pv_write32(party, 3);
+    pv_write16(party + 8, 25);
+    pv_write16(party + 0x0C, 7);
+    pv_write16(party + 0x0E, 7);
+    pv_write32(party + 0x10, 1000);
+    pv_write32(party + 0x38, 0x3FFFFFFFu);
+    party[0x19] = 252;
+    party[0x8C] = 100;
+    pv_refresh_checksum45(party);
+    pv_encrypt45(party, 236);
+    mark_gen4(sav, 0xC100, 0xC100, 0x121E0);
+    sav[0x94] = 1;
+    memcpy(sav + 0x98, party, sizeof party);
+    dex_clear(dex);
+    CHECK(save_read(dex, "Diamond", sav, 0x80000));
+    found = find_species(dex, 25);
+    CHECK(found != NULL);
+    CHECK(found && found->nature == 3 && found->level == 100);
+    CHECK(found && found->evs[1] == 252 && (found->ivs & 31u) == 31u);
+    if (found)
+        mon_battle_stats(found, st);
+    CHECK(st[0] == 211 && st[1] == 229 && st[2] == 116);
+    CHECK(st[3] == 122 && st[4] == 136 && st[5] == 216);
+
+    memset(sav, 0, 0x80000);
+    memset(party, 0, sizeof party);
+    pv_write16(party + 8, 386);
+    pv_write32(party + 0x10, 1000);
+    party[0x40] = (uint8_t)(1u << 3);
+    party[0x8C] = 100;
+    pv_refresh_checksum45(party);
+    pv_encrypt45(party, 236);
+    mark_gen4(sav, 0xC100, 0xC100, 0x121E0);
+    sav[0x94] = 1;
+    memcpy(sav + 0x98, party, sizeof party);
+    dex_clear(dex);
+    CHECK(save_read(dex, "Diamond", sav, 0x80000));
+    found = find_species(dex, 386);
+    CHECK(found && found->form == 1 && found->nature == 0 && found->level == 100);
+    if (found)
+        mon_battle_stats(found, st);
+    CHECK(st[1] == 365);
+
+    memset(sav, 0, 0x20000);
+    memset(g3, 0, sizeof g3);
+    pv_write16(g3 + 4, 1);
+    pv_write16(g3 + 6, 1);
+    pv_write16(g3 + 0x20, 1);
+    pv_write32(g3 + 0x24, 1000);
+    pv_write32(g3 + 0x48, 31u << 5);
+    g3[0x39] = 252;
+    g3[0x54] = 50;
+    pv_refresh_checksum3(g3);
+    pv_encrypt3(g3);
+    sav[0x1000 + 0x234] = 1;
+    memcpy(sav + 0x1000 + 0x238, g3, sizeof g3);
+    seal_gen3(sav);
+    dex_clear(dex);
+    CHECK(save_read(dex, "Emerald", sav, 0x20000));
+    found = find_species(dex, 1);
+    CHECK(found && found->level == 50 && found->nature == 0 && found->form == 0);
+    CHECK(found && found->evs[1] == 252 && ((found->ivs >> 5) & 31u) == 31u);
+    if (found)
+        mon_battle_stats(found, st);
+    /* Bulbasaur, Hardy, attack IV 31 and 252 attack EVs. */
+    CHECK(st[0] == 105);
+    CHECK(st[1] == 101);
+    CHECK(st[2] == 54 && st[3] == 70 && st[4] == 70 && st[5] == 50);
+    free(sav);
+}
+
 static void test_rejects_garbage(Dex *dex)
 {
     uint8_t junk[128];
@@ -405,6 +556,8 @@ int main(void)
     test_gen3(&dex);
     test_frlg(&dex);
     test_moves(&dex);
+    test_rows(&dex);
+    test_battle_stats(&dex);
     test_rejects_garbage(&dex);
     if (fails) {
         printf("%d checks failed\n", fails);

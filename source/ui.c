@@ -2,18 +2,28 @@
 #include "save.h"
 #include "species.h"
 #include "sprites.h"
+#include "stats.h"
 
 #include <nds.h>
 #include <stdio.h>
 #include <string.h>
 
-#define PAGE 20
+enum {
+    DEX_PAGE = 20,
+    COPY_PAGE = 4,
+    VIEW_DEX = 0,
+    VIEW_COPIES = 1
+};
 
 static PrintConsole top_console;
 static PrintConsole bottom_console;
-static int cursor;
-static int scroll;
-static int by_species = 1;
+static SpeciesRow rows[650];
+static int row_count;
+static int dex_cursor;
+static int dex_scroll;
+static int copy_cursor;
+static int copy_scroll;
+static int view = VIEW_DEX;
 
 static void setup_consoles(void)
 {
@@ -37,6 +47,40 @@ static void line_at(int row, int width, const char *text)
     printf("\x1b[%d;1H%-*.*s", row, width, width, text);
 }
 
+static void title_line(const char *left, const char *right)
+{
+    int right_len = (int)strlen(right);
+    int left_w = 30 - right_len;
+    if (left_w < 1)
+        left_w = 1;
+    printf("%-*.*s %s\n", left_w, left_w, left, right);
+}
+
+static void card_line(char mark, const char *text)
+{
+    printf("%c%-30.30s\n", mark, text ? text : "");
+}
+
+static const char *move_or_dash(unsigned move)
+{
+    return move ? move_name(move) : "-";
+}
+
+static const SaveInfo *save_of(const Dex *dex, const MonRef *mon)
+{
+    if (!dex || !mon || mon->save_index >= dex->save_count)
+        return NULL;
+    return &dex->saves[mon->save_index];
+}
+
+static void where_of(const MonRef *mon, char *out, size_t cap)
+{
+    if (mon->flags & MON_PARTY)
+        snprintf(out, cap, "Party %u", (unsigned)mon->slot + 1);
+    else
+        snprintf(out, cap, "Box %u", (unsigned)mon->box + 1);
+}
+
 void ui_status(const char *msg)
 {
     char buf[128];
@@ -47,130 +91,272 @@ void ui_status(const char *msg)
     sprites_flush();
 }
 
-static void mon_label(const MonRef *mon, char *out, size_t cap)
+static void refresh_rows(const Dex *dex)
 {
-    const char *name = (mon->flags & MON_EGG) ? "Egg" : species_name(mon->species);
-    if (mon->flags & MON_SHINY)
-        snprintf(out, cap, "*%s", name);
+    row_count = dex_species_rows(dex, rows, (int)(sizeof rows / sizeof rows[0]));
+}
+
+static void clamp_cursor(int *cursor, int *scroll, int count, int page)
+{
+    if (count <= 0) {
+        *cursor = 0;
+        *scroll = 0;
+        return;
+    }
+    if (*cursor < 0)
+        *cursor = 0;
+    if (*cursor >= count)
+        *cursor = count - 1;
+    if (*cursor < *scroll)
+        *scroll = *cursor;
+    if (*cursor >= *scroll + page)
+        *scroll = *cursor - page + 1;
+}
+
+static void nudge(int *cursor, int count, int page, uint32_t down)
+{
+    int step = page > 4 ? 5 : 1;
+    if (count <= 0)
+        return;
+    if (down & KEY_UP)
+        *cursor -= 1;
+    if (down & KEY_DOWN)
+        *cursor += 1;
+    if (down & KEY_LEFT)
+        *cursor -= step;
+    if (down & KEY_RIGHT)
+        *cursor += step;
+    if (down & KEY_L)
+        *cursor -= page;
+    if (down & KEY_R)
+        *cursor += page;
+}
+
+static void select_species(uint16_t species)
+{
+    int i;
+    dex_cursor = 0;
+    for (i = 0; i < row_count; i++) {
+        if (rows[i].species == species) {
+            dex_cursor = i;
+            break;
+        }
+    }
+    clamp_cursor(&dex_cursor, &dex_scroll, row_count, DEX_PAGE);
+}
+
+static const MonRef *face_mon(const Dex *dex, const SpeciesRow *row)
+{
+    int i;
+    for (i = 0; i < row->count; i++) {
+        const MonRef *mon = &dex->mons[row->first + i];
+        if ((mon->flags & MON_EGG) == 0)
+            return mon;
+    }
+    return &dex->mons[row->first];
+}
+
+static void draw_dex_list(const Dex *dex)
+{
+    int i;
+    int last;
+    char left[32];
+    char right[12];
+
+    snprintf(left, sizeof left, "%d/%d species", dex_cursor + 1, row_count);
+    snprintf(right, sizeof right, "x%d", dex->mon_count);
+    title_line(left, right);
+    last = dex_scroll + DEX_PAGE;
+    if (last > row_count)
+        last = row_count;
+    for (i = dex_scroll; i < last; i++) {
+        char qty[8];
+        snprintf(qty, sizeof qty, "x%u", (unsigned)rows[i].count);
+        printf("%c#%03u %-18.18s %6.6s\n",
+               i == dex_cursor ? '>' : ' ',
+               rows[i].species,
+               species_name(rows[i].species),
+               qty);
+    }
+}
+
+static void draw_copy_list(const Dex *dex, const SpeciesRow *row)
+{
+    int i;
+    int last;
+    char title[40];
+    char pos[24];
+    char buf[40];
+
+    snprintf(title, sizeof title, "#%03u %s", row->species, species_name(row->species));
+    snprintf(pos, sizeof pos, "%d/%u", copy_cursor + 1, (unsigned)row->count);
+    title_line(title, pos);
+
+    last = copy_scroll + COPY_PAGE;
+    if (last > row->count)
+        last = row->count;
+    for (i = copy_scroll; i < last; i++) {
+        const MonRef *mon = &dex->mons[row->first + i];
+        const SaveInfo *info = save_of(dex, mon);
+        uint16_t st[6];
+        char lv[8];
+        char where[12];
+        mon_battle_stats(mon, st);
+        if (mon->flags & MON_EGG)
+            snprintf(lv, sizeof lv, "Egg");
+        else
+            snprintf(lv, sizeof lv, "Lv%-3u", mon->level);
+        where_of(mon, where, sizeof where);
+        snprintf(buf, sizeof buf, "%-5.5s %c %-7.7s %-14.14s",
+                 lv,
+                 (mon->flags & MON_SHINY) ? '*' : ' ',
+                 where,
+                 info ? info->name : "?");
+        card_line(i == copy_cursor ? '>' : ' ', buf);
+        snprintf(buf, sizeof buf, "HP %3u  Atk %3u  Def %3u", st[0], st[1], st[2]);
+        card_line(' ', buf);
+        snprintf(buf, sizeof buf, "SpA %3u  SpD %3u  Spe %3u", st[3], st[4], st[5]);
+        card_line(' ', buf);
+        snprintf(buf, sizeof buf, "%-14.14s  %-14.14s",
+                 move_or_dash(mon->moves[0]), move_or_dash(mon->moves[1]));
+        card_line(' ', buf);
+        snprintf(buf, sizeof buf, "%-14.14s  %-14.14s",
+                 move_or_dash(mon->moves[2]), move_or_dash(mon->moves[3]));
+        card_line(' ', buf);
+    }
+}
+
+static void draw_species_card(const Dex *dex, const SpeciesRow *row)
+{
+    const MonRef *face = face_mon(dex, row);
+    int shiny = 0;
+    int eggs = 0;
+    int i;
+    int line = 1;
+    char buf[32];
+
+    for (i = 0; i < row->count; i++) {
+        const MonRef *mon = &dex->mons[row->first + i];
+        if (mon->flags & MON_SHINY)
+            shiny++;
+        if (mon->flags & MON_EGG)
+            eggs++;
+    }
+
+    snprintf(buf, sizeof buf, "#%03u %s", row->species, species_name(row->species));
+    line_at(line++, 22, buf);
+    snprintf(buf, sizeof buf, "Owned x%u", (unsigned)row->count);
+    line_at(line++, 22, buf);
+    if (face->flags & MON_EGG) {
+        line_at(line++, 22, "Egg");
+    } else {
+        snprintf(buf, sizeof buf, "Best Lv %u%s", face->level, (face->flags & MON_SHINY) ? " *" : "");
+        line_at(line++, 22, buf);
+    }
+    if (shiny > 0) {
+        snprintf(buf, sizeof buf, "Shiny x%d", shiny);
+        line_at(line++, 22, buf);
+    }
+    if (eggs > 0) {
+        snprintf(buf, sizeof buf, "Eggs x%d", eggs);
+        line_at(line++, 22, buf);
+    }
+    snprintf(buf, sizeof buf, "%d saves", dex->save_count);
+    line_at(16, 31, buf);
+    sprites_show(face->species, (face->flags & MON_SHINY) != 0, (face->flags & MON_EGG) != 0);
+}
+
+static void draw_copy_card(const Dex *dex, const MonRef *mon)
+{
+    const SaveInfo *info = save_of(dex, mon);
+    uint16_t st[6];
+    char buf[40];
+
+    mon_battle_stats(mon, st);
+    if (mon->flags & MON_EGG)
+        snprintf(buf, sizeof buf, "Egg%s", (mon->flags & MON_SHINY) ? " *" : "");
     else
-        snprintf(out, cap, "%s", name);
+        snprintf(buf, sizeof buf, "Lv %u%s", mon->level, (mon->flags & MON_SHINY) ? " *" : "");
+    line_at(1, 22, buf);
+    line_at(2, 22, nature_name(mon->nature));
+    snprintf(buf, sizeof buf, "HP %3u  Atk %3u", st[0], st[1]);
+    line_at(3, 22, buf);
+    snprintf(buf, sizeof buf, "Def %3u  SpA %3u", st[2], st[3]);
+    line_at(4, 22, buf);
+    snprintf(buf, sizeof buf, "SpD %3u  Spe %3u", st[4], st[5]);
+    line_at(5, 22, buf);
+    line_at(7, 22, move_or_dash(mon->moves[0]));
+    line_at(8, 22, move_or_dash(mon->moves[1]));
+    line_at(9, 22, move_or_dash(mon->moves[2]));
+    line_at(10, 22, move_or_dash(mon->moves[3]));
+    line_at(12, 31, info ? info->name : "?");
+    if (mon->flags & MON_PARTY)
+        snprintf(buf, sizeof buf, "%s  Party %u", info ? info->game : "?", (unsigned)mon->slot + 1);
+    else
+        snprintf(buf, sizeof buf, "%s  Box %u  slot %u",
+                 info ? info->game : "?", (unsigned)mon->box + 1, (unsigned)mon->slot + 1);
+    line_at(13, 31, buf);
+    sprites_show(mon->species, (mon->flags & MON_SHINY) != 0, (mon->flags & MON_EGG) != 0);
+}
+
+static void draw_controls(void)
+{
+    printf("\x1b[22;1HD-pad scroll   L/R page\n");
+    if (view == VIEW_COPIES)
+        printf("B back     Y rescan\n");
+    else
+        printf("A open     Y rescan\n");
+    printf("SELECT exit");
 }
 
 static void draw(const Dex *dex)
 {
-    int i;
-    int last;
-    const MonRef *sel;
-    char label[16];
-    char where[24];
+    if (view == VIEW_COPIES && (dex_cursor < 0 || dex_cursor >= row_count))
+        view = VIEW_DEX;
+    if (view == VIEW_COPIES)
+        clamp_cursor(&copy_cursor, &copy_scroll, rows[dex_cursor].count, COPY_PAGE);
+    else
+        clamp_cursor(&dex_cursor, &dex_scroll, row_count, DEX_PAGE);
 
     consoleSelect(&top_console);
     consoleClear();
-    if (dex->mon_count == 0) {
+    if (row_count <= 0) {
         printf("No Pokemon found.\n\n");
         printf("Put .sav files in\nroms/nds/saves\nor roms/gba.\n");
+    } else if (view == VIEW_COPIES) {
+        draw_copy_list(dex, &rows[dex_cursor]);
     } else {
-        printf("%3d/%-4d %-7s %s\n",
-               cursor + 1,
-               dex->mon_count,
-               dex->saves[dex->mons[cursor].save_index].game,
-               by_species ? "species" : "file");
-        last = scroll + PAGE;
-        if (last > dex->mon_count)
-            last = dex->mon_count;
-        for (i = scroll; i < last; i++) {
-            const MonRef *mon = &dex->mons[i];
-            mon_label(mon, label, sizeof label);
-            printf("%c%3u %-12.12s %-12.12s\n",
-                   i == cursor ? '>' : ' ',
-                   mon->level,
-                   label,
-                   dex->saves[mon->save_index].name);
-        }
+        draw_dex_list(dex);
     }
 
     consoleSelect(&bottom_console);
     consoleClear();
-    if (dex->mon_count == 0) {
+    if (row_count <= 0) {
         sprites_hide();
         printf("PokeVault\n\n");
         printf("Saves seen: %d\n", dex->files_seen);
+    } else if (view == VIEW_COPIES) {
+        const SpeciesRow *row = &rows[dex_cursor];
+        draw_copy_card(dex, &dex->mons[row->first + copy_cursor]);
     } else {
-        char title[32];
-        char level[24];
-        char game[24];
-        char count[32];
-        int move_i;
-        sel = &dex->mons[cursor];
-        if (sel->flags & MON_PARTY)
-            snprintf(where, sizeof where, "Party slot %u", (unsigned)sel->slot + 1);
-        else
-            snprintf(where, sizeof where, "Box %u slot %u", (unsigned)sel->box + 1, (unsigned)sel->slot + 1);
-        if (sel->flags & MON_EGG)
-            snprintf(title, sizeof title, "Egg (%s)", species_name(sel->species));
-        else
-            snprintf(title, sizeof title, "%s", species_name(sel->species));
-        snprintf(level, sizeof level, "Lv %u%s", sel->level, (sel->flags & MON_SHINY) ? "  Shiny" : "");
-        snprintf(game, sizeof game, "Game %s", dex->saves[sel->save_index].game);
-        /* The sprite covers the top-right 64x64. These lines stay in the left 22 columns. */
-        line_at(1, 22, title);
-        line_at(2, 22, level);
-        line_at(3, 22, where);
-        line_at(4, 22, dex->saves[sel->save_index].name);
-        line_at(5, 22, game);
-        for (move_i = 0; move_i < 4; move_i++) {
-            unsigned move = sel->moves[move_i];
-            line_at(6 + move_i, 22, move ? move_name(move) : "-");
-        }
-        snprintf(count, sizeof count, "%d saves, %d Pokemon", dex->save_count, dex->mon_count);
-        line_at(11, 31, count);
-        if (dex->truncated)
-            line_at(12, 31, "List full.");
-        sprites_show(sel->species, (sel->flags & MON_SHINY) != 0, (sel->flags & MON_EGG) != 0);
+        draw_species_card(dex, &rows[dex_cursor]);
     }
-    printf("\x1b[21;1HD-pad scroll   L/R page\n");
-    printf("X sort   Y rescan\n");
-    printf("SELECT  exit");
-}
-
-static void clamp_view(const Dex *dex)
-{
-    if (dex->mon_count <= 0) {
-        cursor = 0;
-        scroll = 0;
-        return;
-    }
-    if (cursor < 0)
-        cursor = 0;
-    if (cursor >= dex->mon_count)
-        cursor = dex->mon_count - 1;
-    if (cursor < scroll)
-        scroll = cursor;
-    if (cursor >= scroll + PAGE)
-        scroll = cursor - PAGE + 1;
-}
-
-static void keep_selection(Dex *dex, uint16_t order)
-{
-    int i;
-    cursor = 0;
-    for (i = 0; i < dex->mon_count; i++) {
-        if (dex->mons[i].order == order) {
-            cursor = i;
-            break;
-        }
-    }
-    clamp_view(dex);
+    if (dex->truncated)
+        line_at(18, 31, "List full.");
+    draw_controls();
 }
 
 void ui_run(Dex *dex, void (*rescan)(Dex *dex))
 {
-    uint16_t order = 0;
-    int have_order = 0;
-
     keysSetRepeat(16, 5);
-    dex_sort(dex, by_species);
-    clamp_view(dex);
+    dex_sort(dex, 1);
+    refresh_rows(dex);
+    view = VIEW_DEX;
+    dex_cursor = 0;
+    dex_scroll = 0;
+    copy_cursor = 0;
+    copy_scroll = 0;
+    clamp_cursor(&dex_cursor, &dex_scroll, row_count, DEX_PAGE);
     draw(dex);
 
     while (1) {
@@ -187,38 +373,42 @@ void ui_run(Dex *dex, void (*rescan)(Dex *dex))
             return;
 
         if (hit & KEY_Y) {
+            uint16_t species = 0;
+            int keep = 0;
+            if (row_count > 0 && dex_cursor >= 0 && dex_cursor < row_count) {
+                species = rows[dex_cursor].species;
+                keep = 1;
+            }
             ui_status("Scanning the card...");
             rescan(dex);
-            dex_sort(dex, by_species);
-            cursor = 0;
-            scroll = 0;
+            dex_sort(dex, 1);
+            refresh_rows(dex);
+            view = VIEW_DEX;
+            copy_cursor = 0;
+            copy_scroll = 0;
+            if (keep)
+                select_species(species);
+            else
+                clamp_cursor(&dex_cursor, &dex_scroll, row_count, DEX_PAGE);
             dirty = 1;
         }
 
-        if (hit & KEY_X && dex->mon_count > 0) {
-            order = dex->mons[cursor].order;
-            have_order = 1;
-            by_species = !by_species;
-            dex_sort(dex, by_species);
-            if (have_order)
-                keep_selection(dex, order);
+        if (hit & KEY_B && view == VIEW_COPIES) {
+            view = VIEW_DEX;
             dirty = 1;
-        }
-
-        if (dex->mon_count > 0 && (down & (KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT | KEY_L | KEY_R))) {
-            if (down & KEY_UP)
-                cursor--;
-            if (down & KEY_DOWN)
-                cursor++;
-            if (down & KEY_LEFT)
-                cursor -= 5;
-            if (down & KEY_RIGHT)
-                cursor += 5;
-            if (down & KEY_L)
-                cursor -= PAGE;
-            if (down & KEY_R)
-                cursor += PAGE;
-            clamp_view(dex);
+        } else if (hit & KEY_A && view == VIEW_DEX && row_count > 0) {
+            view = VIEW_COPIES;
+            copy_cursor = 0;
+            copy_scroll = 0;
+            dirty = 1;
+        } else if (row_count > 0 && (down & (KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT | KEY_L | KEY_R))) {
+            if (view == VIEW_COPIES) {
+                nudge(&copy_cursor, rows[dex_cursor].count, COPY_PAGE, down);
+                clamp_cursor(&copy_cursor, &copy_scroll, rows[dex_cursor].count, COPY_PAGE);
+            } else {
+                nudge(&dex_cursor, row_count, DEX_PAGE, down);
+                clamp_cursor(&dex_cursor, &dex_scroll, row_count, DEX_PAGE);
+            }
             dirty = 1;
         }
 

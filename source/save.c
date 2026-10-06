@@ -56,6 +56,29 @@ void dex_sort(Dex *dex, int by_species)
     }
 }
 
+int dex_species_rows(const Dex *dex, SpeciesRow *out, int cap)
+{
+    int n = 0;
+    int i = 0;
+
+    if (!dex || !out || cap <= 0)
+        return 0;
+    while (i < dex->mon_count && n < cap) {
+        uint16_t species = dex->mons[i].species;
+        int first = i;
+        int count = 0;
+        while (i < dex->mon_count && dex->mons[i].species == species) {
+            count++;
+            i++;
+        }
+        out[n].species = species;
+        out[n].count = (uint16_t)count;
+        out[n].first = (uint16_t)first;
+        n++;
+    }
+    return n;
+}
+
 static int begin_save(Dex *dex, const char *name, const char *game)
 {
     SaveInfo *info;
@@ -72,7 +95,8 @@ static int begin_save(Dex *dex, const char *name, const char *game)
 }
 
 static void add_mon(Dex *dex, int save_index, uint16_t species, uint8_t level,
-                    uint8_t flags, uint8_t box, uint8_t slot, const uint16_t moves[4])
+                    uint8_t flags, uint8_t box, uint8_t slot, const uint16_t moves[4],
+                    uint32_t ivs, const uint8_t evs[6], uint8_t nature, uint8_t form)
 {
     MonRef *mon;
     int i;
@@ -83,6 +107,7 @@ static void add_mon(Dex *dex, int save_index, uint16_t species, uint8_t level,
         return;
     }
     mon = &dex->mons[dex->mon_count];
+    mon->ivs = ivs;
     mon->species = species;
     mon->order = (uint16_t)dex->mon_count;
     for (i = 0; i < 4; i++)
@@ -92,6 +117,10 @@ static void add_mon(Dex *dex, int save_index, uint16_t species, uint8_t level,
     mon->save_index = (uint8_t)save_index;
     mon->box = box;
     mon->slot = slot;
+    mon->nature = nature;
+    mon->form = form;
+    for (i = 0; i < 6; i++)
+        mon->evs[i] = evs ? evs[i] : 0;
     dex->mon_count++;
     dex->saves[save_index].count++;
 }
@@ -112,7 +141,10 @@ static void consider45(Dex *dex, int save_index, const uint8_t *raw, int len,
     uint32_t pid;
     uint8_t flags = 0;
     uint16_t moves[4];
+    uint8_t evs[6];
+    uint32_t ivs;
     int party_level = 0;
+    int i;
 
     if (len > (int)sizeof tmp)
         return;
@@ -126,20 +158,25 @@ static void consider45(Dex *dex, int save_index, const uint8_t *raw, int len,
 
     exp = pv_read32(tmp + 0x10);
     pid = pv_read32(tmp);
+    ivs = pv_read32(tmp + 0x38);
     if (pv_is_shiny(pid, pv_read16(tmp + 0x0C), pv_read16(tmp + 0x0E)))
         flags |= MON_SHINY;
-    if (((pv_read32(tmp + 0x38) >> 30) & 1u) != 0)
+    if (((ivs >> 30) & 1u) != 0)
         flags |= MON_EGG;
     if (party) {
         flags |= MON_PARTY;
         party_level = tmp[0x8C];
     }
-    /* Attack block sits after growth once pv_decrypt45 has unshuffled. */
+    /* Blocks are in standard order once pv_decrypt45 has unshuffled. */
     moves[0] = pv_read16(tmp + 0x28);
     moves[1] = pv_read16(tmp + 0x2A);
     moves[2] = pv_read16(tmp + 0x2C);
     moves[3] = pv_read16(tmp + 0x2E);
-    add_mon(dex, save_index, species, level_of(exp, species, party_level), flags, box, slot, moves);
+    for (i = 0; i < 6; i++)
+        evs[i] = tmp[0x18 + i];
+    /* Low bits are fateful encounter and gender. The forme index is the rest. */
+    add_mon(dex, save_index, species, level_of(exp, species, party_level), flags, box, slot,
+            moves, ivs, evs, (uint8_t)(pid % 25u), (uint8_t)(tmp[0x40] >> 3));
 }
 
 static void consider3(Dex *dex, int save_index, const uint8_t *raw, int len,
@@ -151,7 +188,10 @@ static void consider3(Dex *dex, int save_index, const uint8_t *raw, int len,
     uint32_t pid;
     uint8_t flags = 0;
     uint16_t moves[4];
+    uint8_t evs[6];
+    uint32_t ivs;
     int party_level = 0;
+    int i;
 
     if (len < 80 || len > (int)sizeof tmp)
         return;
@@ -165,9 +205,10 @@ static void consider3(Dex *dex, int save_index, const uint8_t *raw, int len,
 
     exp = pv_read32(tmp + 0x24);
     pid = pv_read32(tmp);
+    ivs = pv_read32(tmp + 0x48);
     if (pv_is_shiny(pid, pv_read16(tmp + 4), pv_read16(tmp + 6)))
         flags |= MON_SHINY;
-    if (((pv_read32(tmp + 0x48) >> 30) & 1u) != 0)
+    if (((ivs >> 30) & 1u) != 0)
         flags |= MON_EGG;
     if (party && len >= 0x55) {
         flags |= MON_PARTY;
@@ -178,7 +219,10 @@ static void consider3(Dex *dex, int save_index, const uint8_t *raw, int len,
     moves[1] = pv_read16(tmp + 0x2E);
     moves[2] = pv_read16(tmp + 0x30);
     moves[3] = pv_read16(tmp + 0x32);
-    add_mon(dex, save_index, species, level_of(exp, species, party_level), flags, box, slot, moves);
+    for (i = 0; i < 6; i++)
+        evs[i] = tmp[0x38 + i];
+    add_mon(dex, save_index, species, level_of(exp, species, party_level), flags, box, slot,
+            moves, ivs, evs, (uint8_t)(pid % 25u), 0);
 }
 
 static int newer_counter(uint32_t a, uint32_t b)
