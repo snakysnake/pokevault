@@ -7,4 +7,7 @@ void music_init(void);
 /* Refill the stream. Safe before music_init. */
 void music_pump(void);
 
+/* Short cursor tick, in the style of the Gen 4 PC box. Safe before music_init. */
+void music_click(void);
+
 #endif

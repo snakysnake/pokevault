@@ -12,11 +12,13 @@
 
 /* Both screens are a 30x22 text window inside a one-tile frame.
    Palette entry 15 of each 4bpp palette is a text color. The frame
-   uses palette 0 entries 1 (panel) and 2 (gold edge). */
+   uses palette 0 entries 1 (panel) and 2 (gold edge).
+   The list is the full National Dex, species 1 through 649. */
 
 enum {
     COLS = 30,
     ROWS = 22,
+    NATIONAL = 649,
     DEX_PAGE = 20,
     COPY_PAGE = 20,
     VIEW_DEX = 0,
@@ -44,6 +46,7 @@ static int dex_scroll;
 static int copy_cursor;
 static int copy_scroll;
 static int view = VIEW_DEX;
+static int caught;
 
 static const char *const ink_code[16] = {
     "\x1b[30;0m", "\x1b[31;0m", "\x1b[32;0m", "\x1b[33;0m",
@@ -257,8 +260,8 @@ static void paint_palette(u16 *pal)
         pal[i] = 0;
     for (i = 0; i < 16; i++)
         pal[i * 16 + 15] = ink[i];
-    pal[1] = RGB15(4, 9, 18);
-    pal[2] = RGB15(29, 23, 8);
+    pal[1] = RGB15(4, 4, 4);
+    pal[2] = RGB15(28, 22, 8);
 }
 
 static void setup_consoles(void)
@@ -277,8 +280,8 @@ static void setup_consoles(void)
     paint_palette(BG_PALETTE_SUB);
     build_frame(top_console.bgId, 0);
     build_frame(bottom_console.bgId, 1);
-    setBackdropColor(RGB15(1, 3, 8));
-    setBackdropColorSub(RGB15(1, 3, 8));
+    setBackdropColor(RGB15(0, 0, 0));
+    setBackdropColorSub(RGB15(0, 0, 0));
 }
 
 static int type_ink(unsigned type)
@@ -362,7 +365,27 @@ static void where_of(const MonRef *mon, char *out, size_t cap)
 
 static void refresh_rows(const Dex *dex)
 {
-    row_count = dex_species_rows(dex, rows, (int)(sizeof rows / sizeof rows[0]));
+    int mon = 0;
+    int i;
+
+    caught = 0;
+    row_count = NATIONAL;
+    for (i = 1; i <= NATIONAL; i++) {
+        int count = 0;
+        int first;
+        while (mon < dex->mon_count && dex->mons[mon].species < (uint16_t)i)
+            mon++;
+        first = mon;
+        while (mon < dex->mon_count && dex->mons[mon].species == (uint16_t)i) {
+            count++;
+            mon++;
+        }
+        rows[i - 1].species = (uint16_t)i;
+        rows[i - 1].count = (uint16_t)count;
+        rows[i - 1].first = (uint16_t)first;
+        if (count > 0)
+            caught++;
+    }
 }
 
 static void clamp_cursor(int *cursor, int *scroll, int count, int page)
@@ -438,15 +461,18 @@ static void draw_dex_row(int row, const SpeciesRow *entry, int selected)
 {
     char num[8];
     char qty[8];
+    int owned = entry->count > 0;
     int ink = selected ? INK_GOLD : INK_MUTED;
-    int name_ink = selected ? INK_GOLD : INK_CREAM;
+    int name_ink = selected ? INK_GOLD : (owned ? INK_CREAM : INK_MUTED);
+    qty[0] = 0;
     snprintf(num, sizeof num, "#%03u", entry->species);
-    snprintf(qty, sizeof qty, "x%u", (unsigned)entry->count);
+    if (owned)
+        snprintf(qty, sizeof qty, "x%u", (unsigned)entry->count);
     at(row, 0);
     emit(ink, selected ? ">" : "", 2);
     emit(ink, num, 5);
     emit(name_ink, species_name(entry->species), 17);
-    emit_right(ink, qty, 6);
+    emit_right(ink, owned ? qty : "-", 6);
 }
 
 static void draw_copy_row(const MonRef *mon, int row, int selected)
@@ -477,7 +503,8 @@ static void draw_dex_list(const Dex *dex)
     char right[12];
     int i;
     int last;
-    snprintf(right, sizeof right, "x%d", dex->mon_count);
+    (void)dex;
+    snprintf(right, sizeof right, "%d/%d", caught, NATIONAL);
     title_row(0, "Pokedex", right);
     rule_row(1);
     last = dex_scroll + DEX_PAGE;
@@ -504,15 +531,54 @@ static void draw_copy_list(const Dex *dex, const SpeciesRow *row)
         draw_copy_row(&dex->mons[row->first + i], 2 + (i - copy_scroll), i == copy_cursor);
 }
 
+static void draw_missing_card(const Dex *dex, const SpeciesRow *row)
+{
+    char buf[32];
+    unsigned type = species_type(row->species, 0);
+
+    at(0, 0);
+    use_ink(INK_GOLD);
+    printf("#%03u ", row->species);
+    use_ink(INK_CREAM);
+    fputs(species_name(row->species), stdout);
+
+    at(1, 0);
+    use_ink(type_ink(type));
+    fputs(type_name(type), stdout);
+
+    at(3, 0);
+    use_ink(INK_MUTED);
+    fputs("Not caught", stdout);
+    if (dex->save_count == 0) {
+        at(5, 0);
+        fputs("Put .sav files in", stdout);
+        at(6, 0);
+        fputs("roms/nds/saves", stdout);
+        at(7, 0);
+        fputs("or roms/gba.", stdout);
+    }
+    snprintf(buf, sizeof buf, "%d saves", dex->save_count);
+    at(16, 0);
+    use_ink(INK_MUTED);
+    fputs(buf, stdout);
+    sprites_show(row->species, 0, 0);
+}
+
 static void draw_species_card(const Dex *dex, const SpeciesRow *row)
 {
-    const MonRef *face = best_mon(dex, row);
+    const MonRef *face;
     int shiny = 0;
     int eggs = 0;
     int i;
     int line = 2;
     char buf[32];
     unsigned type = species_type(row->species, 0);
+
+    if (row->count == 0) {
+        draw_missing_card(dex, row);
+        return;
+    }
+    face = best_mon(dex, row);
 
     for (i = 0; i < row->count; i++) {
         const MonRef *mon = &dex->mons[row->first + i];
@@ -646,14 +712,18 @@ static void draw_copy_card(const Dex *dex, const MonRef *mon)
 
 static void draw_controls(void)
 {
+    int owned = view == VIEW_DEX && dex_cursor >= 0 && dex_cursor < row_count
+        && rows[dex_cursor].count > 0;
     at(19, 0);
     use_ink(INK_MUTED);
     fputs("D-pad scroll    L/R page", stdout);
     at(20, 0);
     if (view == VIEW_COPIES)
         fputs("B back          Y rescan", stdout);
-    else
+    else if (owned)
         fputs("A open          Y rescan", stdout);
+    else
+        fputs("Y rescan", stdout);
     at(21, 0);
     fputs("SELECT exit", stdout);
 }
@@ -670,11 +740,7 @@ static void draw(const Dex *dex)
     consoleSelect(&top_console);
     consoleClear();
     use_ink(INK_CREAM);
-    if (row_count <= 0) {
-        fputs("No Pokemon found.\n\n", stdout);
-        use_ink(INK_MUTED);
-        fputs("Put .sav files in\nroms/nds/saves\nor roms/gba.", stdout);
-    } else if (view == VIEW_COPIES) {
+    if (view == VIEW_COPIES) {
         draw_copy_list(dex, &rows[dex_cursor]);
     } else {
         draw_dex_list(dex);
@@ -683,17 +749,10 @@ static void draw(const Dex *dex)
     consoleSelect(&bottom_console);
     consoleClear();
     use_ink(INK_CREAM);
-    if (row_count <= 0) {
-        sprites_hide();
-        use_ink(INK_GOLD);
-        fputs("PokeVault", stdout);
-        at(2, 0);
-        use_ink(INK_CREAM);
-        printf("Saves seen: %d", dex->files_seen);
-    } else if (view == VIEW_COPIES) {
+    if (view == VIEW_COPIES) {
         const SpeciesRow *row = &rows[dex_cursor];
         draw_copy_card(dex, &dex->mons[row->first + copy_cursor]);
-    } else {
+    } else if (row_count > 0) {
         draw_species_card(dex, &rows[dex_cursor]);
     }
     if (dex->truncated) {
@@ -773,21 +832,32 @@ void ui_run(Dex *dex, void (*rescan)(Dex *dex))
 
         if (hit & KEY_B && view == VIEW_COPIES) {
             view = VIEW_DEX;
+            music_click();
             dirty = 1;
-        } else if (hit & KEY_A && view == VIEW_DEX && row_count > 0) {
+        } else if (hit & KEY_A && view == VIEW_DEX && row_count > 0 && rows[dex_cursor].count > 0) {
             view = VIEW_COPIES;
             copy_cursor = 0;
             copy_scroll = 0;
+            music_click();
             dirty = 1;
         } else if (row_count > 0 && (down & (KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT | KEY_L | KEY_R))) {
+            int before;
+            int after;
             if (view == VIEW_COPIES) {
+                before = copy_cursor;
                 nudge(&copy_cursor, rows[dex_cursor].count, COPY_PAGE, down);
                 clamp_cursor(&copy_cursor, &copy_scroll, rows[dex_cursor].count, COPY_PAGE);
+                after = copy_cursor;
             } else {
+                before = dex_cursor;
                 nudge(&dex_cursor, row_count, DEX_PAGE, down);
                 clamp_cursor(&dex_cursor, &dex_scroll, row_count, DEX_PAGE);
+                after = dex_cursor;
             }
-            dirty = 1;
+            if (after != before) {
+                music_click();
+                dirty = 1;
+            }
         }
 
         if (dirty)
