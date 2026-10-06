@@ -156,7 +156,7 @@ static int sep_at(const char *s)
     return 0;
 }
 
-void dex_tidy_name(char *name)
+static void strip_pokemon_prefix(char *name)
 {
     const char *s;
     const char *rest;
@@ -165,8 +165,6 @@ void dex_tidy_name(char *name)
     int n;
     int gap;
 
-    if (!name || name[0] == 0)
-        return;
     s = name;
     while (*s == ' ' || *s == '\t')
         s++;
@@ -202,6 +200,183 @@ void dex_tidy_name(char *name)
         *w++ = (char)c;
     }
     *w = 0;
+}
+
+static int wrap_punct(unsigned char c)
+{
+    return c == '(' || c == ')' || c == '[' || c == ']' || c == '{' || c == '}'
+        || c == '<' || c == '>' || c == '"' || c == '\'' || c == '.' || c == ','
+        || c == ';' || c == ':' || c == '!' || c == '?' || c == '+' || c == '*';
+}
+
+static int open_bracket(unsigned char c)
+{
+    return c == '(' || c == '[' || c == '{' || c == '<';
+}
+
+static int close_bracket(unsigned char c)
+{
+    return c == ')' || c == ']' || c == '}' || c == '>';
+}
+
+static int has_alnum(const char *s, int n)
+{
+    int i;
+    for (i = 0; i < n; i++) {
+        unsigned char c = (unsigned char)s[i];
+        if ((c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z'))
+            return 1;
+        if (c >= 0x80)
+            return 1;
+    }
+    return 0;
+}
+
+static int contains_patch(const char *s, int n)
+{
+    static const char word[] = "patch";
+    int i;
+    for (i = 0; i + 5 <= n; i++) {
+        int j;
+        for (j = 0; j < 5; j++) {
+            if (lower_ascii((unsigned char)s[i + j]) != (unsigned char)word[j])
+                break;
+        }
+        if (j == 5)
+            return 1;
+    }
+    return 0;
+}
+
+/* "v1", "v0.4.7", also wrapped as "(v1)" or "[v0.4.7]". */
+static int is_version_token(const char *s, int n)
+{
+    int i = 0;
+    int saw_digit = 0;
+    while (i < n && wrap_punct((unsigned char)s[i]))
+        i++;
+    if (i >= n || lower_ascii((unsigned char)s[i]) != 'v')
+        return 0;
+    i++;
+    if (i >= n || s[i] < '0' || s[i] > '9')
+        return 0;
+    while (i < n) {
+        if (s[i] >= '0' && s[i] <= '9') {
+            saw_digit = 1;
+            i++;
+            continue;
+        }
+        if (s[i] == '.' && saw_digit && i + 1 < n && s[i + 1] >= '0' && s[i + 1] <= '9') {
+            saw_digit = 0;
+            i++;
+            continue;
+        }
+        break;
+    }
+    while (i < n && wrap_punct((unsigned char)s[i]))
+        i++;
+    return i == n;
+}
+
+static int segment_junk(const char *s, int n)
+{
+    return n <= 0 || !has_alnum(s, n) || contains_patch(s, n) || is_version_token(s, n);
+}
+
+/* Drops bracket groups whose contents are a patch word or a version tag. */
+static int scrub_brackets(const char *s, int n, char *dst, int cap)
+{
+    int i = 0;
+    int w = 0;
+    if (cap <= 0)
+        return 0;
+    while (i < n && w + 1 < cap) {
+        if (open_bracket((unsigned char)s[i])) {
+            int j = i + 1;
+            int depth = 1;
+            while (j < n && depth > 0) {
+                if (open_bracket((unsigned char)s[j]))
+                    depth++;
+                else if (close_bracket((unsigned char)s[j]))
+                    depth--;
+                if (depth > 0)
+                    j++;
+            }
+            if (depth == 0 && segment_junk(s + i + 1, j - (i + 1))) {
+                i = j + 1;
+                continue;
+            }
+        }
+        dst[w++] = s[i++];
+    }
+    dst[w] = 0;
+    return w;
+}
+
+/* Keeps the title pieces of one word. "Platin-Edition-patch" stays "Platin-Edition". */
+static int keep_word(const char *s, int n, char *dst, int cap)
+{
+    int i = 0;
+    int w = 0;
+    int any = 0;
+    if (cap <= 0)
+        return 0;
+    while (i < n) {
+        int j = i;
+        char seg[128];
+        int sn;
+        int k;
+        while (j < n && s[j] != '-')
+            j++;
+        sn = scrub_brackets(s + i, j - i, seg, (int)sizeof seg);
+        if (!segment_junk(seg, sn)) {
+            if (any && w + 1 < cap)
+                dst[w++] = '-';
+            for (k = 0; k < sn && w + 1 < cap; k++)
+                dst[w++] = seg[k];
+            any = 1;
+        }
+        i = j < n ? j + 1 : n;
+    }
+    dst[w] = 0;
+    return any ? w : 0;
+}
+
+static void strip_junk_words(char *name)
+{
+    char *r = name;
+    char *w = name;
+    int wrote = 0;
+
+    while (*r) {
+        char *start;
+        char kept[128];
+        int n;
+        while (*r == ' ' || *r == '\t' || *r == '_')
+            r++;
+        if (*r == 0)
+            break;
+        start = r;
+        while (*r && *r != ' ' && *r != '\t' && *r != '_')
+            r++;
+        n = keep_word(start, (int)(r - start), kept, (int)sizeof kept);
+        if (n <= 0)
+            continue;
+        if (wrote)
+            *w++ = ' ';
+        memcpy(w, kept, (size_t)n);
+        w += n;
+        wrote = 1;
+    }
+    *w = 0;
+}
+
+void dex_tidy_name(char *name)
+{
+    if (!name || name[0] == 0)
+        return;
+    strip_pokemon_prefix(name);
+    strip_junk_words(name);
 }
 
 static int begin_save(Dex *dex, const char *name, const char *game)

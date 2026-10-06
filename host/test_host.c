@@ -655,6 +655,42 @@ static void test_tidy_name(void)
     strcpy(name, "Pok\xE9mon - Kristall-Edition");
     dex_tidy_name(name);
     CHECK(strcmp(name, "Kristall-Edition") == 0);
+
+    strcpy(name, "Pokemon - Silberne Edition Patch");
+    dex_tidy_name(name);
+    CHECK(strcmp(name, "Silberne Edition") == 0);
+
+    strcpy(name, "Pokemon - Silberne Edition v1");
+    dex_tidy_name(name);
+    CHECK(strcmp(name, "Silberne Edition") == 0);
+
+    strcpy(name, "Pokemon - HeartGold v0.4.7");
+    dex_tidy_name(name);
+    CHECK(strcmp(name, "HeartGold") == 0);
+
+    strcpy(name, "Diamond (Patch) [v1]");
+    dex_tidy_name(name);
+    CHECK(strcmp(name, "Diamond") == 0);
+
+    strcpy(name, "POKEMON_-_Perl-Edition_v0.4.7_PATCHED");
+    dex_tidy_name(name);
+    CHECK(strcmp(name, "Perl-Edition") == 0);
+
+    strcpy(name, "Platin-Edition-patch v1.2");
+    dex_tidy_name(name);
+    CHECK(strcmp(name, "Platin-Edition") == 0);
+
+    strcpy(name, "Emerald [PATCHED] V1.2.3");
+    dex_tidy_name(name);
+    CHECK(strcmp(name, "Emerald") == 0);
+
+    strcpy(name, "Feuerrote Edition(v0.4.7)");
+    dex_tidy_name(name);
+    CHECK(strcmp(name, "Feuerrote Edition") == 0);
+
+    strcpy(name, "Pokemon - Version Saphir");
+    dex_tidy_name(name);
+    CHECK(strcmp(name, "Version Saphir") == 0);
 }
 
 static void test_rejects_garbage(Dex *dex)

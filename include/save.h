@@ -74,7 +74,8 @@ void dex_clear(Dex *dex);
 void dex_sort(Dex *dex, int by_species);
 
 /* Drops a leading "Pokemon - " (or Pokémon, with a dash or similar separator).
-   "Pokemon - Silberne Edition" becomes "Silberne Edition". Other titles stay. */
+   "Pokemon - Silberne Edition" becomes "Silberne Edition". Also drops words
+   that contain "patch", and version tags such as "v1" or "v0.4.7". */
 void dex_tidy_name(char *name);
 
 /* Groups a species-sorted dex. out[i].first indexes the first copy in dex->mons. */
