@@ -1,4 +1,5 @@
 #include "moves.h"
+#include "music.h"
 #include "save.h"
 #include "species.h"
 #include "sprites.h"
@@ -89,6 +90,7 @@ void ui_status(const char *msg)
     sprites_hide();
     swiWaitForVBlank();
     sprites_flush();
+    music_pump();
 }
 
 static void refresh_rows(const Dex *dex)
@@ -365,6 +367,7 @@ void ui_run(Dex *dex, void (*rescan)(Dex *dex))
         uint32_t hit;
         swiWaitForVBlank();
         sprites_flush();
+        music_pump();
         scanKeys();
         down = keysDownRepeat();
         hit = keysDown();
@@ -427,6 +430,8 @@ void ui_init(void)
 void ui_fail(const char *msg)
 {
     ui_status(msg);
-    while (1)
+    while (1) {
         swiWaitForVBlank();
+        music_pump();
+    }
 }

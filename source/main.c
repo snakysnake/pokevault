@@ -1,3 +1,4 @@
+#include "music.h"
 #include "scan.h"
 #include "ui.h"
 
@@ -15,8 +16,10 @@ static void rescan(Dex *list)
 int main(void)
 {
     ui_init();
-    /* Sprites live in the ROM filesystem. Saves stay on the SD card. */
+    /* Sprites and music live in the ROM filesystem. Saves stay on the SD card. */
     nitroFSInit(NULL);
+    music_init();
+    music_pump();
     if (!fatInitDefault())
         ui_fail("Could not open the SD card.");
 

@@ -1,3 +1,4 @@
+#include "music.h"
 #include "scan.h"
 
 #include <dirent.h>
@@ -96,7 +97,19 @@ static void read_sav(Dex *dex, const char *path, uint8_t *buf, size_t cap, ScanP
     f = fopen(path, "rb");
     if (!f)
         return;
-    n = fread(buf, 1, cap, f);
+    n = 0;
+    while (n < cap) {
+        size_t want = cap - n;
+        size_t got;
+        if (want > 16384)
+            want = 16384;
+        got = fread(buf + n, 1, want, f);
+        if (got == 0)
+            break;
+        n += got;
+        /* The soundtrack stream has to be refilled while this read holds the card. */
+        music_pump();
+    }
     fclose(f);
     if (n == 0)
         return;
@@ -122,6 +135,7 @@ static void walk(Dex *dex, const char *path, int depth, uint8_t *buf, size_t cap
 
     while ((ent = readdir(dir)) != NULL) {
         char child[512];
+        music_pump();
         struct stat st;
         if (ent->d_name[0] == '.')
             continue;

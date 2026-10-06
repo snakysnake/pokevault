@@ -1,4 +1,5 @@
 main.o: /Users/lucacaspari/Development/pokevault/source/main.c \
+ /Users/lucacaspari/Development/pokevault/include/music.h \
  /Users/lucacaspari/Development/pokevault/include/scan.h \
  /Users/lucacaspari/Development/pokevault/include/save.h \
  /Users/lucacaspari/Development/pokevault/include/ui.h \
@@ -10,6 +11,7 @@ main.o: /Users/lucacaspari/Development/pokevault/source/main.c \
  /opt/devkitpro/calico/include/calico/nds/nitrorom.h \
  /opt/devkitpro/calico/include/calico/nds/env.h \
  /opt/devkitpro/calico/include/calico/nds/mm_env.h
+/Users/lucacaspari/Development/pokevault/include/music.h:
 /Users/lucacaspari/Development/pokevault/include/scan.h:
 /Users/lucacaspari/Development/pokevault/include/save.h:
 /Users/lucacaspari/Development/pokevault/include/ui.h:
