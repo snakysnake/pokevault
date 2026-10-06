@@ -19,6 +19,7 @@ enum {
 typedef struct __attribute__((packed)) {
     uint16_t species;
     uint16_t order;
+    uint16_t moves[4];
     uint8_t level;
     uint8_t flags;
     uint8_t save_index;

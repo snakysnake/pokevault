@@ -1,4 +1,5 @@
 #include "crypto.h"
+#include "moves.h"
 #include "save.h"
 #include "species.h"
 
@@ -16,8 +17,9 @@ static int fails;
         }                                                                           \
     } while (0)
 
-static void fill_pk45(uint8_t *pk, int len, uint32_t pid, uint16_t species, uint32_t exp,
-                      uint16_t tid, uint16_t sid, int egg, int party_level)
+static void fill_pk45_moves(uint8_t *pk, int len, uint32_t pid, uint16_t species, uint32_t exp,
+                            uint16_t tid, uint16_t sid, int egg, int party_level,
+                            const uint16_t moves[4])
 {
     memset(pk, 0, (size_t)len);
     pv_write32(pk, pid);
@@ -25,6 +27,12 @@ static void fill_pk45(uint8_t *pk, int len, uint32_t pid, uint16_t species, uint
     pv_write16(pk + 0x0C, tid);
     pv_write16(pk + 0x0E, sid);
     pv_write32(pk + 0x10, exp);
+    if (moves) {
+        pv_write16(pk + 0x28, moves[0]);
+        pv_write16(pk + 0x2A, moves[1]);
+        pv_write16(pk + 0x2C, moves[2]);
+        pv_write16(pk + 0x2E, moves[3]);
+    }
     if (egg)
         pv_write32(pk + 0x38, 1u << 30);
     if (len > 0x8C)
@@ -33,8 +41,14 @@ static void fill_pk45(uint8_t *pk, int len, uint32_t pid, uint16_t species, uint
     pv_encrypt45(pk, len);
 }
 
-static void fill_pk3(uint8_t *pk, int len, uint32_t pid, uint16_t species, uint32_t exp,
-                     uint16_t tid, uint16_t sid, int party_level)
+static void fill_pk45(uint8_t *pk, int len, uint32_t pid, uint16_t species, uint32_t exp,
+                      uint16_t tid, uint16_t sid, int egg, int party_level)
+{
+    fill_pk45_moves(pk, len, pid, species, exp, tid, sid, egg, party_level, NULL);
+}
+
+static void fill_pk3_moves(uint8_t *pk, int len, uint32_t pid, uint16_t species, uint32_t exp,
+                           uint16_t tid, uint16_t sid, int party_level, const uint16_t moves[4])
 {
     memset(pk, 0, (size_t)len);
     pv_write32(pk, pid);
@@ -42,10 +56,22 @@ static void fill_pk3(uint8_t *pk, int len, uint32_t pid, uint16_t species, uint3
     pv_write16(pk + 6, sid);
     pv_write16(pk + 0x20, species);
     pv_write32(pk + 0x24, exp);
+    if (moves) {
+        pv_write16(pk + 0x2C, moves[0]);
+        pv_write16(pk + 0x2E, moves[1]);
+        pv_write16(pk + 0x30, moves[2]);
+        pv_write16(pk + 0x32, moves[3]);
+    }
     if (len > 0x54)
         pk[0x54] = (uint8_t)party_level;
     pv_refresh_checksum3(pk);
     pv_encrypt3(pk);
+}
+
+static void fill_pk3(uint8_t *pk, int len, uint32_t pid, uint16_t species, uint32_t exp,
+                     uint16_t tid, uint16_t sid, int party_level)
+{
+    fill_pk3_moves(pk, len, pid, species, exp, tid, sid, party_level, NULL);
 }
 
 static void mark_gen4(uint8_t *data, int general_size, int storage_start, int storage_size)
@@ -123,6 +149,11 @@ static void test_species(void)
     CHECK(strcmp(species_name(29), "Nidoran-F") == 0);
     CHECK(strcmp(species_name(32), "Nidoran-M") == 0);
     CHECK(strcmp(species_name(649), "Genesect") == 0);
+    CHECK(strcmp(move_name(1), "Pound") == 0);
+    CHECK(strcmp(move_name(33), "Tackle") == 0);
+    CHECK(strcmp(move_name(85), "Thunderbolt") == 0);
+    CHECK(strcmp(move_name(0), "????") == 0);
+    CHECK(move_name(559)[0] != '?');
     CHECK(species_growth(1) == 3);
     CHECK(species_growth(25) == 0);
     CHECK(species_growth(129) == 5);
@@ -154,7 +185,9 @@ static void test_dp(Dex *dex)
     mon = find_species(dex, 25);
     boxed = find_species(dex, 6);
     CHECK(mon && mon->level == 50 && (mon->flags & MON_PARTY) && (mon->flags & MON_SHINY));
+    CHECK(mon && mon->moves[0] == 0 && mon->moves[3] == 0);
     CHECK(boxed && boxed->level == 12 && (boxed->flags & MON_EGG) && boxed->box == 0);
+    CHECK(boxed && boxed->moves[0] == 0);
     free(sav);
 }
 
@@ -304,6 +337,51 @@ static void test_frlg(Dex *dex)
     free(sav);
 }
 
+static void test_moves(Dex *dex)
+{
+    uint8_t *sav = calloc(1, 0x80000);
+    uint8_t party[236];
+    uint8_t g3[100];
+    /* Personality selects a block order that moves the attack block off slot 1. */
+    const uint32_t shuffled = 2u << 13;
+    const uint16_t m45[4] = {85, 33, 98, 0};
+    const uint16_t m3[4] = {22, 75, 0, 0};
+    const MonRef *mon;
+    int i;
+
+    CHECK(sav != NULL);
+    mark_gen4(sav, 0xC100, 0xC100, 0x121E0);
+    fill_pk45_moves(party, 236, shuffled, 25, 1000, 1, 1, 0, 40, m45);
+    sav[0x94] = 1;
+    memcpy(sav + 0x98, party, sizeof party);
+    dex_clear(dex);
+    CHECK(save_read(dex, "Diamond", sav, 0x80000));
+    mon = find_species(dex, 25);
+    CHECK(mon != NULL);
+    CHECK(mon && mon->moves[0] == 85);
+    CHECK(mon && mon->moves[1] == 33);
+    CHECK(mon && mon->moves[2] == 98);
+    CHECK(mon && mon->moves[3] == 0);
+
+    memset(sav, 0, 0x80000);
+    fill_pk3_moves(g3, 100, 2, 1, 1000, 0x10, 0x20, 16, m3);
+    memcpy(sav + 0x1000 + 0x238, g3, sizeof g3);
+    sav[0x1000 + 0x234] = 1;
+    for (i = 0; i < 14; i++) {
+        pv_write16(sav + i * 0x1000 + 0xFF4, (uint16_t)i);
+        pv_write32(sav + i * 0x1000 + 0xFFC, 4);
+        pv_write16(sav + i * 0x1000 + 0xFF6, pv_checksum32(sav + i * 0x1000, 0xF80));
+    }
+    dex_clear(dex);
+    CHECK(save_read(dex, "Emerald", sav, 0x20000));
+    mon = find_species(dex, 1);
+    CHECK(mon && mon->level == 16);
+    CHECK(mon && mon->moves[0] == 22);
+    CHECK(mon && mon->moves[1] == 75);
+    CHECK(mon && mon->moves[2] == 0);
+    free(sav);
+}
+
 static void test_rejects_garbage(Dex *dex)
 {
     uint8_t junk[128];
@@ -326,6 +404,7 @@ int main(void)
     test_b2w2(&dex);
     test_gen3(&dex);
     test_frlg(&dex);
+    test_moves(&dex);
     test_rejects_garbage(&dex);
     if (fails) {
         printf("%d checks failed\n", fails);

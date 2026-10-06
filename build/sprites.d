@@ -1,7 +1,4 @@
-ui.o: /Users/lucacaspari/Development/pokevault/source/ui.c \
- /Users/lucacaspari/Development/pokevault/include/moves.h \
- /Users/lucacaspari/Development/pokevault/include/save.h \
- /Users/lucacaspari/Development/pokevault/include/species.h \
+sprites.o: /Users/lucacaspari/Development/pokevault/source/sprites.c \
  /Users/lucacaspari/Development/pokevault/include/sprites.h \
  /opt/devkitpro/libnds/include/nds.h \
  /opt/devkitpro/calico/include/calico.h \
@@ -116,9 +113,6 @@ ui.o: /Users/lucacaspari/Development/pokevault/source/ui.c \
  /opt/devkitpro/libnds/include/nds/arm9/trig_lut.h \
  /opt/devkitpro/libnds/include/nds/arm9/video.h \
  /opt/devkitpro/libnds/include/nds/arm9/videoGL.h
-/Users/lucacaspari/Development/pokevault/include/moves.h:
-/Users/lucacaspari/Development/pokevault/include/save.h:
-/Users/lucacaspari/Development/pokevault/include/species.h:
 /Users/lucacaspari/Development/pokevault/include/sprites.h:
 /opt/devkitpro/libnds/include/nds.h:
 /opt/devkitpro/calico/include/calico.h:

@@ -72,9 +72,10 @@ static int begin_save(Dex *dex, const char *name, const char *game)
 }
 
 static void add_mon(Dex *dex, int save_index, uint16_t species, uint8_t level,
-                    uint8_t flags, uint8_t box, uint8_t slot)
+                    uint8_t flags, uint8_t box, uint8_t slot, const uint16_t moves[4])
 {
     MonRef *mon;
+    int i;
     if (save_index < 0)
         return;
     if (dex->mon_count >= MAX_MONS) {
@@ -84,6 +85,8 @@ static void add_mon(Dex *dex, int save_index, uint16_t species, uint8_t level,
     mon = &dex->mons[dex->mon_count];
     mon->species = species;
     mon->order = (uint16_t)dex->mon_count;
+    for (i = 0; i < 4; i++)
+        mon->moves[i] = moves ? moves[i] : 0;
     mon->level = level;
     mon->flags = flags;
     mon->save_index = (uint8_t)save_index;
@@ -108,6 +111,7 @@ static void consider45(Dex *dex, int save_index, const uint8_t *raw, int len,
     uint32_t exp;
     uint32_t pid;
     uint8_t flags = 0;
+    uint16_t moves[4];
     int party_level = 0;
 
     if (len > (int)sizeof tmp)
@@ -130,7 +134,12 @@ static void consider45(Dex *dex, int save_index, const uint8_t *raw, int len,
         flags |= MON_PARTY;
         party_level = tmp[0x8C];
     }
-    add_mon(dex, save_index, species, level_of(exp, species, party_level), flags, box, slot);
+    /* Attack block sits after growth once pv_decrypt45 has unshuffled. */
+    moves[0] = pv_read16(tmp + 0x28);
+    moves[1] = pv_read16(tmp + 0x2A);
+    moves[2] = pv_read16(tmp + 0x2C);
+    moves[3] = pv_read16(tmp + 0x2E);
+    add_mon(dex, save_index, species, level_of(exp, species, party_level), flags, box, slot, moves);
 }
 
 static void consider3(Dex *dex, int save_index, const uint8_t *raw, int len,
@@ -141,6 +150,7 @@ static void consider3(Dex *dex, int save_index, const uint8_t *raw, int len,
     uint32_t exp;
     uint32_t pid;
     uint8_t flags = 0;
+    uint16_t moves[4];
     int party_level = 0;
 
     if (len < 80 || len > (int)sizeof tmp)
@@ -163,7 +173,12 @@ static void consider3(Dex *dex, int save_index, const uint8_t *raw, int len,
         flags |= MON_PARTY;
         party_level = tmp[0x54];
     }
-    add_mon(dex, save_index, species, level_of(exp, species, party_level), flags, box, slot);
+    /* Attack substructure follows growth once pv_decrypt3 has unshuffled. */
+    moves[0] = pv_read16(tmp + 0x2C);
+    moves[1] = pv_read16(tmp + 0x2E);
+    moves[2] = pv_read16(tmp + 0x30);
+    moves[3] = pv_read16(tmp + 0x32);
+    add_mon(dex, save_index, species, level_of(exp, species, party_level), flags, box, slot, moves);
 }
 
 static int newer_counter(uint32_t a, uint32_t b)
