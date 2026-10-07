@@ -1,3 +1,4 @@
 tools/cache/
 tools/.pydeps/
 nitro/music/
+.DS_Store
