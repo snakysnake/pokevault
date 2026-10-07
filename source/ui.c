@@ -2018,12 +2018,42 @@ static int saver_alive(const MonRef *mon)
         && mon->species >= 1 && mon->species <= NATIONAL_DEX;
 }
 
+/* rows[] is the filtered list, in national order. */
+static int species_listed(uint16_t species)
+{
+    int lo = 0;
+    int hi = row_count;
+    while (lo < hi) {
+        int mid = lo + (hi - lo) / 2;
+        if (rows[mid].species < species)
+            lo = mid + 1;
+        else
+            hi = mid;
+    }
+    return lo < row_count && rows[lo].species == species;
+}
+
+/* Same rules as the list: the species must still be shown, and this copy's
+   game must still be included. Shiny narrows to the shiny copies themselves. */
+static int saver_visible(const Dex *dex, const MonRef *mon)
+{
+    if (!saver_alive(mon))
+        return 0;
+    if (!version_on(dex, mon->save_index))
+        return 0;
+    if (!species_listed(mon->species))
+        return 0;
+    if (filter_shiny && (mon->flags & MON_SHINY) == 0)
+        return 0;
+    return 1;
+}
+
 static int saver_count(const Dex *dex)
 {
     int i;
     int n = 0;
     for (i = 0; i < dex->mon_count; i++) {
-        if (saver_alive(&dex->mons[i]))
+        if (saver_visible(dex, &dex->mons[i]))
             n++;
     }
     return n;
@@ -2034,7 +2064,7 @@ static int saver_nth(const Dex *dex, int nth)
     int i;
     int seen = 0;
     for (i = 0; i < dex->mon_count; i++) {
-        if (!saver_alive(&dex->mons[i]))
+        if (!saver_visible(dex, &dex->mons[i]))
             continue;
         if (seen == nth)
             return i;
@@ -2054,7 +2084,11 @@ static uint32_t saver_rnd(void)
 
 static int saver_pick(const Dex *dex)
 {
-    int n = saver_count(dex);
+    int n;
+    /* Toggles apply to the list when the filter screen closes. Apply them
+       here too, so a game turned off still counts while that screen is open. */
+    apply_filter(dex);
+    n = saver_count(dex);
     int choice;
     int index;
     if (n <= 0)
