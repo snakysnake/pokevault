@@ -7,7 +7,7 @@ $(error "Please set DEVKITARM in your environment. export DEVKITARM=<path to>dev
 endif
 
 # These set the information text in the nds file
-GAME_TITLE     := PokeVault
+GAME_TITLE     := pokevault
 GAME_SUBTITLE1 := Save reader
 GAME_SUBTITLE2 := Read only
 
@@ -31,7 +31,7 @@ INCLUDES := include
 DATA     := data
 GRAPHICS :=
 AUDIO    :=
-ICON     :=
+ICON     := pokevault.bmp
 
 # specify a directory which contains the nitro filesystem
 # this is relative to the Makefile
@@ -170,11 +170,12 @@ $(BUILD):
 # and sprites with the music folder left out.
 quiet: $(QUIET_NDS)
 
-$(QUIET_NDS): $(CURDIR)/$(TARGET).elf $(CURDIR)/nitro/sprites.bin
+$(QUIET_NDS): $(CURDIR)/$(TARGET).elf $(CURDIR)/nitro/sprites.bin $(GAME_ICON)
 	@mkdir -p $(QUIET_NITRO)
 	@rm -rf $(QUIET_NITRO)/music
 	@ln -sfn $(CURDIR)/nitro/sprites.bin $(QUIET_NITRO)/sprites.bin
 	@ndstool -c $(QUIET_NDS) -9 $(CURDIR)/$(TARGET).elf $(_ARM7_ELF) \
+		-g PKVT PV "$(GAME_TITLE)" \
 		-b $(GAME_ICON) "$(GAME_TITLE);$(GAME_SUBTITLE1);No music" \
 		-d $(QUIET_NITRO)
 	@echo built ... $(notdir $(QUIET_NDS))
@@ -191,6 +192,10 @@ else
 # main targets
 #---------------------------------------------------------------------------------
 $(OUTPUT).nds: $(OUTPUT).elf $(NITRO_FILES) $(GAME_ICON)
+	$(SILENTCMD)ndstool -c $@ -9 $< $(_ARM7_ELF) \
+		-g PKVT PV "$(GAME_TITLE)" \
+		-b $(GAME_ICON) "$(GAME_TITLE);$(GAME_SUBTITLE1);$(GAME_SUBTITLE2)" $(_ADDFILES)
+	$(SILENTMSG) built ... $(notdir $@)
 $(OUTPUT).elf: $(OFILES)
 
 # source files depend on generated headers
