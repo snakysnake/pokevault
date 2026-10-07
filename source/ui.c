@@ -29,7 +29,7 @@ enum {
     PAGE_DEX = 1,
     PAGE_GAMES = 2,
     PAGE_PROGRESS = 3,
-    GAME_PAGE = 10,
+    GAME_PAGE = 7,
     FILTER_CAUGHT = 0,
     FILTER_SEEN = 1,
     FILTER_DEX = 2,
@@ -1118,7 +1118,6 @@ static void draw_copy_card(const Dex *dex, const MonRef *mon)
     uint16_t st[6];
     int peak;
     int i;
-    int any = 0;
     int egg = (mon->flags & MON_EGG) != 0;
     char buf[40];
     static const char *const labels[6] = {"HP", "Atk", "Def", "SpA", "SpD", "Spe"};
@@ -1150,16 +1149,8 @@ static void draw_copy_card(const Dex *dex, const MonRef *mon)
             use_ink(INK_GOLD);
             stat_bar(st[i], peak);
         }
-        for (i = 0; i < 4; i++) {
+        for (i = 0; i < 4; i++)
             draw_move(10 + i, mon->moves[i]);
-            if (mon->moves[i])
-                any = 1;
-        }
-        if (any) {
-            at(14, 0);
-            use_ink(INK_MUTED);
-            fputs("A or tap a move", stdout);
-        }
     }
 
     at(15, 0);
@@ -1720,13 +1711,11 @@ static void draw_games(const Dex *dex)
         last = dex->save_count;
     for (i = game_scroll; i < last; i++) {
         const SaveInfo *info = &dex->saves[i];
-        char money[16];
         char play[16];
         char dexn[12];
-        int row = 2 + (i - game_scroll) * 2;
+        int row = 2 + (i - game_scroll) * 3;
         int on = i == game_cursor;
         int cap = game_national(info);
-        format_money(info->money, money, sizeof money);
         format_play(info, play, sizeof play);
         snprintf(dexn, sizeof dexn, "%d/%d", dex_flag_count(info, 1, cap), cap);
         at(row, 0);
@@ -1735,9 +1724,8 @@ static void draw_games(const Dex *dex)
         emit_right(on ? INK_GOLD : INK_MUTED, info->game, 8);
         at(row + 1, 0);
         emit(INK_MUTED, "", 2);
-        emit(on ? INK_GOLD : INK_MUTED, money, 11);
-        emit(on ? INK_CREAM : INK_MUTED, play, 10);
-        emit_right(on ? INK_CREAM : INK_MUTED, dexn, 7);
+        emit(on ? INK_CREAM : INK_MUTED, play, 12);
+        emit_right(on ? INK_CREAM : INK_MUTED, dexn, COLS - 14);
     }
 }
 
