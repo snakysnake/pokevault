@@ -1,3 +1,7 @@
+Download .nds file: https://drive.google.com/file/d/1LvC5g9VQ6L-VBDcoDpvZ0nYO8c8tdP0W/view
+
+Or build it yourself using the source code.
+
 # PokeVault
 
 PokeVault is a Nintendo DS homebrew that reads Pokémon saves off the SD card and shows them as one National Dex. It is read only. It never writes to a save.
