@@ -702,3 +702,34 @@ uint8_t species_growth(unsigned species)
         return 0;
     return growth[species];
 }
+
+/* national = internal + delta[internal - 277], for internal 277..411.
+   Values are the PKHeX Table3InternalToNational deltas. */
+static const int8_t gen3_delta[135] = {
+    -25, -25, -25, -25, -25, -25, -25, -25, -25, -25,
+    -25, -25, -25, -25, -25, -25, -25, -25, -25, -25,
+    -25, -25, -25, -25, -11, -11, -11, -28, -28, -21,
+    -21,  19, -31, -31, -28, -28,   7,   7, -15, -15,
+     35,  25,  25, -21,   3, -20,  16,  16,  45,  15,
+     15,  21,  21, -12, -12,  -4,  -4,  -4, -39, -39,
+    -28, -28, -17, -17,  22,  22,  22, -13, -13,  15,
+     15, -11, -11, -52, -26, -26, -42, -42, -52, -49,
+    -49, -25, -25,   0,  -6,  -6, -48, -77, -77, -77,
+    -51, -51, -12, -77, -77, -77,  -7,  -7,  -7, -17,
+    -24, -24, -43, -45, -12, -78, -78, -78, -34, -73,
+    -73, -43, -43, -43, -43,-112,-112,-112, -24, -24,
+    -24, -24, -24, -24, -24, -24, -24, -22, -22, -22,
+    -27, -27, -24, -24, -53
+};
+
+uint16_t species_from_gen3(uint16_t internal)
+{
+    int shift;
+
+    if (internal < 252)
+        return internal;
+    shift = (int)internal - 277;
+    if (shift < 0 || shift >= (int)(sizeof gen3_delta))
+        return 0;
+    return (uint16_t)((int)internal + gen3_delta[shift]);
+}

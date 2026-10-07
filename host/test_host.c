@@ -312,10 +312,16 @@ static void test_gen3(Dex *dex)
     uint8_t *sav = calloc(1, 0x20000);
     uint8_t party[100];
     uint8_t box[80];
+    uint8_t blaziken[80];
+    uint8_t salamence[80];
     int i;
 
     fill_pk3(party, 100, 0x01020304u, 1, 1000, 0x10, 0x20, 16);
     fill_pk3(box, 80, 0x22222222u, 4, 1059860, 0x10, 0x20, 0);
+    /* Internal ids: Blaziken is 282, Salamence is 397. Experience is the
+       exact threshold for level 50 medium-slow and level 53 slow. */
+    fill_pk3(blaziken, 80, 0x33333333u, 282, 117360, 0x10, 0x20, 0);
+    fill_pk3(salamence, 80, 0x44444444u, 397, 186096, 0x10, 0x20, 0);
     CHECK(pv_decrypt3(party));
     pv_write16(party + 0x46, (uint16_t)(4u << 11));
     pv_refresh_checksum3(party);
@@ -324,6 +330,8 @@ static void test_gen3(Dex *dex)
     sav[0x1000 + 0x234] = 1;
     /* Section 5 is the first storage section. Box data starts 4 bytes in. */
     memcpy(sav + 5 * 0x1000 + 4, box, sizeof box);
+    memcpy(sav + 5 * 0x1000 + 4 + 80, blaziken, sizeof blaziken);
+    memcpy(sav + 5 * 0x1000 + 4 + 160, salamence, sizeof salamence);
     set_save_bit(sav + 0x28, 1);
     set_save_bit(sav + 0x5C, 7);
 
@@ -341,12 +349,15 @@ static void test_gen3(Dex *dex)
 
     dex_clear(dex);
     CHECK(save_read(dex, "Emerald", sav, 0x20000));
-    CHECK(dex->mon_count == 2);
+    CHECK(dex->mon_count == 4);
     CHECK(strcmp(dex->saves[0].game, "R/S") == 0);
     CHECK(find_species(dex, 1) && find_species(dex, 1)->level == 16);
     CHECK(find_species(dex, 1)->flags & MON_PARTY);
     CHECK(find_species(dex, 4) && find_species(dex, 4)->level == 100);
     CHECK(find_species(dex, 4)->box == 0);
+    CHECK(find_species(dex, 257) && find_species(dex, 257)->level == 50);
+    CHECK(find_species(dex, 373) && find_species(dex, 373)->level == 53);
+    CHECK(find_species(dex, 282) == NULL);
     CHECK(find_species(dex, 1)->ball == 4 && find_species(dex, 1)->met_month == 0);
     CHECK(save_bit(dex->saves[0].dex_caught, 1) && save_bit(dex->saves[0].dex_seen, 1));
     CHECK(!save_bit(dex->saves[0].dex_caught, 7) && save_bit(dex->saves[0].dex_seen, 7));

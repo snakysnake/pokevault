@@ -714,7 +714,9 @@ static void consider3(Dex *dex, int save_index, const uint8_t *raw, int len,
     if (!pv_decrypt3(tmp))
         return;
 
-    species = pv_read16(tmp + 0x20);
+    /* The save stores the Generation 3 index. Hoenn ids run past 386,
+       and they are not national numbers, so convert before the range check. */
+    species = species_from_gen3(pv_read16(tmp + 0x20));
     if (species == 0 || species > 386)
         return;
 
