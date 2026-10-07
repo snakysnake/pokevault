@@ -1,4 +1,5 @@
 #include "crypto.h"
+#include "identity.h"
 #include "moves.h"
 #include "flavor.h"
 #include "save.h"
@@ -284,6 +285,12 @@ static void test_bw_picks_newer_copy(Dex *dex)
 
     fill_pk45(older, 220, 4, 25, 1000, 1, 1, 0, 12);
     fill_pk45(newer, 220, 9, 133, 1000, 1, 1, 0, 20);
+    CHECK(pv_decrypt45(newer, 220));
+    newer[0x5F] = 21;
+    newer[0x41] = 3;
+    pv_write16(newer + 0x80, 8);
+    pv_refresh_checksum45(newer);
+    pv_encrypt45(newer, 220);
     sav[0x18E04] = 1;
     memcpy(sav + 0x18E08, older, sizeof older);
     seal_gen5(sav, 0x24000, 0x8C, 0x23F34, 1);
@@ -300,6 +307,9 @@ static void test_bw_picks_newer_copy(Dex *dex)
     CHECK(strcmp(dex->saves[0].game, "B/W") == 0);
     CHECK(dex->mons[0].species == 133);
     CHECK(dex->mons[0].level == 20);
+    CHECK(dex->mons[0].nature == 3);
+    CHECK(dex->mons[0].origin == 21 && dex->mons[0].met_loc == 8);
+    CHECK(strcmp(location_name(21, 8), "Castelia City") == 0);
     CHECK(dex->mons[0].flags & MON_PARTY);
     CHECK(save_bit(dex->saves[0].dex_caught, 133) && save_bit(dex->saves[0].dex_seen, 133));
     CHECK(!save_bit(dex->saves[0].dex_caught, 495) && save_bit(dex->saves[0].dex_seen, 495));
@@ -323,7 +333,17 @@ static void test_gen3(Dex *dex)
     fill_pk3(blaziken, 80, 0x33333333u, 282, 117360, 0x10, 0x20, 0);
     fill_pk3(salamence, 80, 0x44444444u, 397, 186096, 0x10, 0x20, 0);
     CHECK(pv_decrypt3(party));
-    pv_write16(party + 0x46, (uint16_t)(4u << 11));
+    /* SPARKY, Potion, Littleroot, Emerald, Poké Ball. */
+    party[0x08] = 0xCD;
+    party[0x09] = 0xCA;
+    party[0x0A] = 0xBB;
+    party[0x0B] = 0xCC;
+    party[0x0C] = 0xC5;
+    party[0x0D] = 0xD3;
+    party[0x0E] = 0xFF;
+    pv_write16(party + 0x22, 13);
+    party[0x45] = 0;
+    pv_write16(party + 0x46, (uint16_t)((4u << 11) | (3u << 7)));
     pv_refresh_checksum3(party);
     pv_encrypt3(party);
     memcpy(sav + 0x1000 + 0x238, party, sizeof party);
@@ -359,6 +379,13 @@ static void test_gen3(Dex *dex)
     CHECK(find_species(dex, 373) && find_species(dex, 373)->level == 53);
     CHECK(find_species(dex, 282) == NULL);
     CHECK(find_species(dex, 1)->ball == 4 && find_species(dex, 1)->met_month == 0);
+    CHECK(strcmp(find_species(dex, 1)->nick, "SPARKY") == 0);
+    CHECK(find_species(dex, 1)->item == 13 && find_species(dex, 1)->item_gen == 3);
+    CHECK(find_species(dex, 1)->ability == 65);
+    CHECK(find_species(dex, 1)->gender == GENDER_FEMALE);
+    CHECK(find_species(dex, 1)->origin == 3 && find_species(dex, 1)->met_loc == 0);
+    CHECK(strcmp(item_name(3, 13), "Potion") == 0);
+    CHECK(strcmp(location_name(3, 0), "Littleroot Town") == 0);
     CHECK(save_bit(dex->saves[0].dex_caught, 1) && save_bit(dex->saves[0].dex_seen, 1));
     CHECK(!save_bit(dex->saves[0].dex_caught, 7) && save_bit(dex->saves[0].dex_seen, 7));
     CHECK(!save_bit(dex->saves[0].dex_seen, 4));
@@ -764,6 +791,65 @@ static void test_tidy_name(void)
     CHECK(strcmp(name, "Version Saphir") == 0);
 }
 
+static void put_utf16(uint8_t *p, const char *text)
+{
+    int i = 0;
+    while (text[i] && i < 10) {
+        p[i * 2] = (uint8_t)text[i];
+        p[i * 2 + 1] = 0;
+        i++;
+    }
+}
+
+static void test_identity(Dex *dex)
+{
+    uint8_t *sav = calloc(1, 0x80000);
+    uint8_t party[236];
+    const MonRef *mon;
+
+    CHECK(strcmp(ability_name(65), "Overgrow") == 0);
+    CHECK(strcmp(item_name(4, 234), "Leftovers") == 0);
+    CHECK(strcmp(origin_name(12), "Platinum") == 0);
+    CHECK(species_gender(25, 0) == GENDER_FEMALE);
+    CHECK(species_gender(25, 200) == GENDER_MALE);
+    CHECK(species_gender(81, 5) == GENDER_NONE);
+    CHECK(species_gender(29, 9) == GENDER_FEMALE);
+    CHECK(species_gender(32, 9) == GENDER_MALE);
+    CHECK(species_ability(257, 1) == 66);
+
+    CHECK(sav != NULL);
+    mark_gen4(sav, 0xCF2C, 0xCF2C, 0x121E4);
+    fill_pk45(party, 236, 1, 25, 800000, 7, 7, 0, 40);
+    CHECK(pv_decrypt45(party, 236));
+    party[0x5F] = 12;
+    party[0x15] = 65;
+    party[0x40] = (uint8_t)(GENDER_FEMALE << 1);
+    party[0x18] = 252;
+    party[0x19] = 4;
+    pv_write16(party + 0x0A, 234);
+    pv_write16(party + 0x46, 48);
+    pv_write32(party + 0x38, 31u | (31u << 5));
+    put_utf16(party + 0x48, "Sparky");
+    pv_refresh_checksum45(party);
+    pv_encrypt45(party, 236);
+    sav[0x9C] = 1;
+    memcpy(sav + 0xA0, party, sizeof party);
+
+    dex_clear(dex);
+    CHECK(save_read(dex, "Platinum", sav, 0x80000));
+    mon = find_species(dex, 25);
+    CHECK(mon && mon->level == 40);
+    CHECK(mon && strcmp(mon->nick, "Sparky") == 0);
+    CHECK(mon && mon->item == 234 && mon->item_gen == 4);
+    CHECK(mon && mon->ability == 65);
+    CHECK(mon && mon->gender == GENDER_FEMALE);
+    CHECK(mon && mon->origin == 12 && mon->met_loc == 48);
+    CHECK(mon && mon->evs[0] == 252 && mon->evs[1] == 4);
+    CHECK(mon && (mon->ivs & 31u) == 31u && ((mon->ivs >> 5) & 31u) == 31u);
+    CHECK(strcmp(location_name(12, 48), "Eterna Forest") == 0);
+    free(sav);
+}
+
 static void test_rejects_garbage(Dex *dex)
 {
     uint8_t junk[128];
@@ -792,6 +878,7 @@ int main(void)
     test_move_info();
     test_types();
     test_tidy_name();
+    test_identity(&dex);
     test_rejects_garbage(&dex);
     if (fails) {
         printf("%d checks failed\n", fails);

@@ -12,15 +12,18 @@ Each species shows whether you have a copy stored, whether a save has it marked 
 
 A single Pokémon shows:
 
-- Level, nature, and calculated battle stats
+- Its nickname, when it has one
+- Level, nature, gender, and calculated battle stats, drawn as bars
+- Its ability and held item
 - Its four moves
 - The ball it was caught in, and the date, when the save has one
+- Where it was caught, and which game it came from
 - Which file it came from, and its box or party slot
 - The Pokédex entry
 - Type weaknesses
 - A sprite, including the shiny sprite
 
-The home menu also has a Games page and a Progress page. Games lists each save with the trainer name, money, play time, and Pokédex count. Progress is one bar for the current list: shiny, stored, caught in a Pokédex, seen, and not seen.
+The home menu also has a Games page and a Progress page. Games lists each save with the trainer name, money, play time, and Pokédex count. Open a save to see its party and boxes. Progress is one bar for the current list: shiny, stored, caught in a Pokédex, seen, and not seen. It also counts a living dex, and the formes you have for Unown, Shellos, Rotom, Deerling, and the other shapes the saves record.
 
 ## Saves it reads
 
@@ -48,6 +51,7 @@ It keeps up to 48 saves and 16,384 Pokémon. Past that, the list says it is full
 
 - Up and Down scroll, Left and Right move one line, L and R turn the page
 - A opens that species
+- Y finds a species by name, or by a nickname on a stored copy
 - X opens the filter
 - B returns to the menu
 
@@ -55,7 +59,8 @@ It keeps up to 48 saves and 16,384 Pokémon. Past that, the list says it is full
 
 - Up and Down move between copies
 - L and R switch the bottom screen between Stats, Entry, and Weak
-- A, or a tap on a move, opens that move. Up and Down switch moves, and B returns
+- A, or a tap on a move, highlights that move. A again opens it. Up and Down move the highlight, and B leaves it
+- On a move, Up and Down switch moves, and B returns to the highlight
 - B goes back to the list
 
 **Filter**
@@ -69,10 +74,19 @@ It keeps up to 48 saves and 16,384 Pokémon. Past that, the list says it is full
 
 A toggles a row. On Games or Pokédex, A opens that list. B goes back, and from the top of the filter it closes it.
 
+**Find**
+
+- Up and Down, Left and Right move through the letters
+- A types the letter. Delete and Clear are at the bottom
+- B deletes a letter, and leaves Find when the query is empty
+- Y closes Find and keeps the query
+
 **Games and Progress**
 
 - Up and Down scroll the save list
-- B returns to the menu
+- A opens that save's party and boxes
+- In the boxes, the D-pad moves between slots, L and R change box, and A opens that Pokémon in the dex
+- B returns to the menu, or from the boxes back to the save list
 
 ## Running it
 

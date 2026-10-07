@@ -1,6 +1,7 @@
 #include "save.h"
 
 #include "crypto.h"
+#include "identity.h"
 #include "species.h"
 
 #include <stdlib.h>
@@ -539,38 +540,98 @@ static void read_profile3(SaveInfo *info, const uint8_t *small, const uint8_t *l
                 pv_read16(small + 0x0E), small[0x10], small[0x11]);
 }
 
-static void add_mon(Dex *dex, int save_index, uint16_t species, uint8_t level,
-                    uint8_t flags, uint8_t box, uint8_t slot, const uint16_t moves[4],
-                    uint32_t ivs, const uint8_t evs[6], uint8_t nature, uint8_t form,
-                    uint8_t ball, uint8_t met_year, uint8_t met_month, uint8_t met_day)
+static int same_word(const char *a, const char *b)
+{
+    if (!a || !b)
+        return 0;
+    while (*a && *b) {
+        unsigned char ca = (unsigned char)*a++;
+        unsigned char cb = (unsigned char)*b++;
+        if (ca >= 'A' && ca <= 'Z')
+            ca = (unsigned char)(ca - 'A' + 'a');
+        if (cb >= 'A' && cb <= 'Z')
+            cb = (unsigned char)(cb - 'A' + 'a');
+        if (ca != cb)
+            return 0;
+    }
+    return *a == 0 && *b == 0;
+}
+
+/* Keeps a nickname only when it is not the species name. */
+static void keep_nick(char *dst, int cap, const char *nick, uint16_t species)
+{
+    int i;
+    if (cap <= 0)
+        return;
+    dst[0] = 0;
+    if (!nick || !nick[0] || same_word(nick, species_name(species)))
+        return;
+    for (i = 0; i + 1 < cap && nick[i]; i++)
+        dst[i] = nick[i];
+    dst[i] = 0;
+}
+
+typedef struct {
+    const uint16_t *moves;
+    const uint8_t *evs;
+    const char *nick;
+    uint32_t ivs;
+    uint16_t species;
+    uint16_t item;
+    uint16_t met_loc;
+    uint8_t level;
+    uint8_t flags;
+    uint8_t box;
+    uint8_t slot;
+    uint8_t nature;
+    uint8_t form;
+    uint8_t ball;
+    uint8_t met_year;
+    uint8_t met_month;
+    uint8_t met_day;
+    uint8_t ability;
+    uint8_t gender;
+    uint8_t origin;
+    uint8_t item_gen;
+} Caught;
+
+static void add_mon(Dex *dex, int save_index, const Caught *in)
 {
     MonRef *mon;
     int i;
-    if (save_index < 0)
+    if (!in || save_index < 0)
         return;
     if (dex->mon_count >= MAX_MONS) {
         dex->truncated = true;
         return;
     }
     mon = &dex->mons[dex->mon_count];
-    mon->ivs = ivs;
-    mon->species = species;
+    memset(mon, 0, sizeof *mon);
+    mon->ivs = in->ivs;
+    mon->species = in->species;
     mon->order = (uint16_t)dex->mon_count;
     for (i = 0; i < 4; i++)
-        mon->moves[i] = moves ? moves[i] : 0;
-    mon->level = level;
-    mon->flags = flags;
+        mon->moves[i] = in->moves ? in->moves[i] : 0;
+    mon->level = in->level;
+    mon->flags = in->flags;
     mon->save_index = (uint8_t)save_index;
-    mon->box = box;
-    mon->slot = slot;
-    mon->nature = nature;
-    mon->form = form;
+    mon->box = in->box;
+    mon->slot = in->slot;
+    mon->nature = in->nature;
+    mon->form = in->form;
     for (i = 0; i < 6; i++)
-        mon->evs[i] = evs ? evs[i] : 0;
-    mon->ball = ball;
-    mon->met_year = met_year;
-    mon->met_month = met_month;
-    mon->met_day = met_day;
+        mon->evs[i] = in->evs ? in->evs[i] : 0;
+    mon->ball = in->ball;
+    mon->met_year = in->met_year;
+    mon->met_month = in->met_month;
+    mon->met_day = in->met_day;
+    mon->item = in->item;
+    mon->met_loc = in->met_loc;
+    mon->ability = in->ability;
+    mon->gender = in->gender;
+    mon->origin = in->origin;
+    mon->item_gen = in->item ? in->item_gen : 0;
+    keep_nick(mon->nick, (int)sizeof mon->nick, in->nick, in->species);
     dex->mon_count++;
     dex->saves[save_index].count++;
 }
@@ -639,6 +700,25 @@ static uint8_t ball_of45(const uint8_t *pk, int len)
     return pk[0x83];
 }
 
+/* Platinum and HG/SS use the 16-bit place at 0x46. Diamond, Pearl, and
+   Generation 5 use the 16-bit place at 0x80. A transferred Pokémon can
+   have the extended place set, so that one wins when it is present. */
+static uint16_t met_of45(const uint8_t *pk, int len)
+{
+    uint8_t version = pk[0x5F];
+    uint16_t extended = 0;
+    uint16_t plain = 0;
+    if (len >= 0x48)
+        extended = pv_read16(pk + 0x46);
+    if (len >= 0x82)
+        plain = pv_read16(pk + 0x80);
+    if (version >= 20 && version <= 23)
+        return plain;
+    if (extended)
+        return extended;
+    return plain;
+}
+
 static uint8_t level_of(uint32_t exp, uint16_t species, int party_level)
 {
     if (party_level >= 1 && party_level <= 100)
@@ -657,6 +737,11 @@ static void consider45(Dex *dex, int save_index, const uint8_t *raw, int len,
     uint16_t moves[4];
     uint8_t evs[6];
     uint32_t ivs;
+    uint8_t version;
+    uint8_t nature;
+    uint8_t gender;
+    char nick[16];
+    Caught caught;
     int party_level = 0;
     int i;
 
@@ -673,13 +758,15 @@ static void consider45(Dex *dex, int save_index, const uint8_t *raw, int len,
     exp = pv_read32(tmp + 0x10);
     pid = pv_read32(tmp);
     ivs = pv_read32(tmp + 0x38);
+    version = tmp[0x5F];
     if (pv_is_shiny(pid, pv_read16(tmp + 0x0C), pv_read16(tmp + 0x0E)))
         flags |= MON_SHINY;
     if (((ivs >> 30) & 1u) != 0)
         flags |= MON_EGG;
     if (party) {
         flags |= MON_PARTY;
-        party_level = tmp[0x8C];
+        if (len > 0x8C)
+            party_level = tmp[0x8C];
     }
     /* Blocks are in standard order once pv_decrypt45 has unshuffled. */
     moves[0] = pv_read16(tmp + 0x28);
@@ -688,10 +775,37 @@ static void consider45(Dex *dex, int save_index, const uint8_t *raw, int len,
     moves[3] = pv_read16(tmp + 0x2E);
     for (i = 0; i < 6; i++)
         evs[i] = tmp[0x18 + i];
-    /* Low bits are fateful encounter and gender. The forme index is the rest. */
-    add_mon(dex, save_index, species, level_of(exp, species, party_level), flags, box, slot,
-            moves, ivs, evs, (uint8_t)(pid % 25u), (uint8_t)(tmp[0x40] >> 3),
-            ball_of45(tmp, len), tmp[0x7B], tmp[0x7C], tmp[0x7D]);
+    /* Generation 5 stores the nature on its own. Generation 4 uses the personality. */
+    nature = (uint8_t)(pid % 25u);
+    if (version >= 20 && version <= 23 && tmp[0x41] < 25)
+        nature = tmp[0x41];
+    gender = (uint8_t)((tmp[0x40] >> 1) & 3u);
+    if (gender > GENDER_NONE)
+        gender = GENDER_NONE;
+    decode_utf16_name(tmp + 0x48, 22, nick, (int)sizeof nick);
+    memset(&caught, 0, sizeof caught);
+    caught.moves = moves;
+    caught.evs = evs;
+    caught.nick = nick;
+    caught.ivs = ivs;
+    caught.species = species;
+    caught.item = pv_read16(tmp + 0x0A);
+    caught.met_loc = met_of45(tmp, len);
+    caught.level = level_of(exp, species, party_level);
+    caught.flags = flags;
+    caught.box = box;
+    caught.slot = slot;
+    caught.nature = nature;
+    caught.form = (uint8_t)(tmp[0x40] >> 3);
+    caught.ball = ball_of45(tmp, len);
+    caught.met_year = tmp[0x7B];
+    caught.met_month = tmp[0x7C];
+    caught.met_day = tmp[0x7D];
+    caught.ability = tmp[0x15];
+    caught.gender = gender;
+    caught.origin = version;
+    caught.item_gen = 4;
+    add_mon(dex, save_index, &caught);
 }
 
 static void consider3(Dex *dex, int save_index, const uint8_t *raw, int len,
@@ -705,6 +819,9 @@ static void consider3(Dex *dex, int save_index, const uint8_t *raw, int len,
     uint16_t moves[4];
     uint8_t evs[6];
     uint32_t ivs;
+    uint16_t origins;
+    char nick[16];
+    Caught caught;
     int party_level = 0;
     int i;
 
@@ -738,10 +855,30 @@ static void consider3(Dex *dex, int save_index, const uint8_t *raw, int len,
     moves[3] = pv_read16(tmp + 0x32);
     for (i = 0; i < 6; i++)
         evs[i] = tmp[0x38 + i];
-    /* Origins at 0x46: met level, origin game, ball, OT gender. No catch date. */
-    add_mon(dex, save_index, species, level_of(exp, species, party_level), flags, box, slot,
-            moves, ivs, evs, (uint8_t)(pid % 25u), 0,
-            (uint8_t)((pv_read16(tmp + 0x46) >> 11) & 0xF), 0, 0, 0);
+    /* Origins at 0x46: met level, origin game, ball, OT gender. No catch date.
+       The ability bit sits outside the encrypted block. */
+    origins = pv_read16(tmp + 0x46);
+    decode_g3_name(tmp + 0x08, 10, nick, (int)sizeof nick);
+    memset(&caught, 0, sizeof caught);
+    caught.moves = moves;
+    caught.evs = evs;
+    caught.nick = nick;
+    caught.ivs = ivs;
+    caught.species = species;
+    caught.item = pv_read16(tmp + 0x22);
+    caught.met_loc = tmp[0x45];
+    caught.level = level_of(exp, species, party_level);
+    caught.flags = flags;
+    caught.box = box;
+    caught.slot = slot;
+    caught.nature = (uint8_t)(pid % 25u);
+    caught.form = 0;
+    caught.ball = (uint8_t)((origins >> 11) & 0xF);
+    caught.ability = species_ability(species, (tmp[0x13] & 1) != 0);
+    caught.gender = species_gender(species, pid);
+    caught.origin = (uint8_t)((origins >> 7) & 0xF);
+    caught.item_gen = 3;
+    add_mon(dex, save_index, &caught);
 }
 
 static int newer_counter(uint32_t a, uint32_t b)

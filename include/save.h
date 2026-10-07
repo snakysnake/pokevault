@@ -12,6 +12,12 @@ enum {
 };
 
 enum {
+    GENDER_MALE = 0,
+    GENDER_FEMALE = 1,
+    GENDER_NONE = 2
+};
+
+enum {
     MAX_MONS = 16384,
     MAX_SAVES = 48,
     NATIONAL_DEX = 649,
@@ -42,6 +48,16 @@ typedef struct {
     uint8_t met_year;
     uint8_t met_month;
     uint8_t met_day;
+    /* item_gen is 3, or 4 for the shared Generation 4 and 5 index. 0 is none.
+       origin is the version id. gender is GENDER_MALE, GENDER_FEMALE, or
+       GENDER_NONE. nick is empty when the Pokémon still has its species name. */
+    uint16_t item;
+    uint16_t met_loc;
+    uint8_t ability;
+    uint8_t gender;
+    uint8_t origin;
+    uint8_t item_gen;
+    char nick[12];
 } MonRef;
 
 typedef struct {

@@ -155,17 +155,34 @@ else
   endif
 endif
 
-.PHONY: $(BUILD) clean
+QUIET_NDS   := $(CURDIR)/$(TARGET)-nomusic.nds
+QUIET_NITRO := $(CURDIR)/$(BUILD)/nitro-nomusic
+
+.PHONY: $(BUILD) clean quiet
 
 #---------------------------------------------------------------------------------
 $(BUILD):
 	@mkdir -p $@
 	@$(MAKE) --no-print-directory -C $(BUILD) -f $(CURDIR)/Makefile
+	@$(MAKE) --no-print-directory -f $(CURDIR)/Makefile quiet
+
+# Soundtrack stays in $(TARGET).nds. This second ROM packs the same program
+# and sprites with the music folder left out.
+quiet: $(QUIET_NDS)
+
+$(QUIET_NDS): $(CURDIR)/$(TARGET).elf $(CURDIR)/nitro/sprites.bin
+	@mkdir -p $(QUIET_NITRO)
+	@rm -rf $(QUIET_NITRO)/music
+	@ln -sfn $(CURDIR)/nitro/sprites.bin $(QUIET_NITRO)/sprites.bin
+	@ndstool -c $(QUIET_NDS) -9 $(CURDIR)/$(TARGET).elf $(_ARM7_ELF) \
+		-b $(GAME_ICON) "$(GAME_TITLE);$(GAME_SUBTITLE1);No music" \
+		-d $(QUIET_NITRO)
+	@echo built ... $(notdir $(QUIET_NDS))
 
 #---------------------------------------------------------------------------------
 clean:
 	@echo clean ...
-	@rm -fr $(BUILD) $(TARGET).elf $(TARGET).nds $(SOUNDBANK)
+	@rm -fr $(BUILD) $(TARGET).elf $(TARGET).nds $(TARGET)-nomusic.nds $(SOUNDBANK)
 
 #---------------------------------------------------------------------------------
 else
