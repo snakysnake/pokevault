@@ -24,6 +24,7 @@ enum {
     VIEW_DEX = 0,
     VIEW_COPIES = 1,
     VIEW_FILTER = 2,
+    VIEW_MOVE = 3,
     PAGE_HOME = 0,
     PAGE_DEX = 1,
     PAGE_GAMES = 2,
@@ -77,6 +78,7 @@ static int dex_scroll;
 static int copy_cursor;
 static int copy_scroll;
 static int copy_page;
+static int move_cursor;
 static int page = PAGE_HOME;
 static int home_cursor;
 static int game_cursor;
@@ -1036,7 +1038,14 @@ static void draw_card_pager(int which)
     fputs("R", stdout);
 }
 
-static int draw_wrapped(int row, int last, const char *text)
+static int wrap_width(int row, int fixed)
+{
+    if (fixed > 0)
+        return fixed;
+    return line_cols(row);
+}
+
+static int draw_wrapped(int row, int last, const char *text, int fixed)
 {
     int col = 0;
     if (!text)
@@ -1050,13 +1059,13 @@ static int draw_wrapped(int row, int last, const char *text)
             word++;
         if (word == 0)
             break;
-        width = line_cols(row);
+        width = wrap_width(row, fixed);
         if (col > 0 && col + 1 + word > width) {
             row++;
             col = 0;
             if (row > last)
                 break;
-            width = line_cols(row);
+            width = wrap_width(row, fixed);
         }
         if (word > width)
             word = width;
@@ -1109,6 +1118,7 @@ static void draw_copy_card(const Dex *dex, const MonRef *mon)
     uint16_t st[6];
     int peak;
     int i;
+    int any = 0;
     int egg = (mon->flags & MON_EGG) != 0;
     char buf[40];
     static const char *const labels[6] = {"HP", "Atk", "Def", "SpA", "SpD", "Spe"};
@@ -1140,8 +1150,16 @@ static void draw_copy_card(const Dex *dex, const MonRef *mon)
             use_ink(INK_GOLD);
             stat_bar(st[i], peak);
         }
-        for (i = 0; i < 4; i++)
+        for (i = 0; i < 4; i++) {
             draw_move(10 + i, mon->moves[i]);
+            if (mon->moves[i])
+                any = 1;
+        }
+        if (any) {
+            at(14, 0);
+            use_ink(INK_MUTED);
+            fputs("A or tap a move", stdout);
+        }
     }
 
     at(15, 0);
@@ -1165,6 +1183,100 @@ static void draw_copy_card(const Dex *dex, const MonRef *mon)
     fputs(buf, stdout);
 }
 
+static const char *category_name(unsigned category)
+{
+    if (category == MOVE_PHYSICAL)
+        return "Physical";
+    if (category == MOVE_SPECIAL)
+        return "Special";
+    if (category == MOVE_STATUS)
+        return "Status";
+    return "-";
+}
+
+static int category_ink(unsigned category)
+{
+    if (category == MOVE_PHYSICAL)
+        return 9;
+    if (category == MOVE_SPECIAL)
+        return 12;
+    return INK_MUTED;
+}
+
+static void draw_meter(int row, const char *label, const char *value)
+{
+    at(row, 0);
+    emit(INK_MUTED, label, 10);
+    use_ink(INK_CREAM);
+    fputs(value, stdout);
+}
+
+static void draw_move_card(unsigned move, int index, int total)
+{
+    MoveInfo info;
+    char buf[32];
+    const char *effect;
+    const char *category;
+    int known;
+    int line = 3;
+
+    known = move_info(move, &info);
+    category = known ? category_name(info.category) : "-";
+    at(0, 0);
+    emit(type_ink(move_type(move)), move_name(move), total > 1 ? COLS - 4 : COLS);
+    if (total > 1) {
+        snprintf(buf, sizeof buf, "%d/%d", index + 1, total);
+        at(0, COLS - text_len(buf));
+        use_ink(INK_GOLD);
+        fputs(buf, stdout);
+    }
+    at(1, 0);
+    use_ink(type_ink(move_type(move)));
+    fputs(type_name(move_type(move)), stdout);
+    at(1, COLS - text_len(category));
+    use_ink(category_ink(known ? info.category : 0));
+    fputs(category, stdout);
+    rule_row(2);
+
+    if (!known) {
+        at(line, 0);
+        use_ink(INK_MUTED);
+        fputs("No info.", stdout);
+    } else {
+        if (info.power)
+            snprintf(buf, sizeof buf, "%u", info.power);
+        else
+            snprintf(buf, sizeof buf, "-");
+        draw_meter(line++, "Power", buf);
+        if (info.accuracy)
+            snprintf(buf, sizeof buf, "%u%%", info.accuracy);
+        else
+            snprintf(buf, sizeof buf, "Sure");
+        draw_meter(line++, "Accuracy", buf);
+        snprintf(buf, sizeof buf, "%u", info.pp);
+        draw_meter(line++, "PP", buf);
+        if (info.priority) {
+            if (info.priority > 0)
+                snprintf(buf, sizeof buf, "+%d", info.priority);
+            else
+                snprintf(buf, sizeof buf, "%d", info.priority);
+            draw_meter(line++, "Priority", buf);
+        }
+        effect = move_effect(move);
+        if (effect && effect[0]) {
+            line++;
+            draw_wrapped(line, 19, effect, COLS);
+        }
+    }
+    at(21, 0);
+    use_ink(INK_MUTED);
+    fputs("B back", stdout);
+    if (total > 1) {
+        at(21, COLS - 7);
+        fputs("Up Down", stdout);
+    }
+}
+
 static void draw_uncaught_stats(unsigned species)
 {
     draw_species_title(species, 0, 0);
@@ -1185,7 +1297,7 @@ static void draw_copy_entry(unsigned species, unsigned form, int shiny)
         fputs("No entry.", stdout);
         return;
     }
-    draw_wrapped(3, 19, text);
+    draw_wrapped(3, 19, text, 0);
 }
 
 static void draw_copy_weak(unsigned species, unsigned form, int shiny)
@@ -1915,9 +2027,9 @@ static void draw(const Dex *dex)
         sprites_hide();
         return;
     }
-    if (view == VIEW_COPIES && dex_cursor >= 0 && dex_cursor < row_count)
+    if ((view == VIEW_COPIES || view == VIEW_MOVE) && dex_cursor >= 0 && dex_cursor < row_count)
         copies = enabled_stored(dex, &rows[dex_cursor]);
-    if (view == VIEW_COPIES)
+    if (view == VIEW_COPIES || view == VIEW_MOVE)
         clamp_cursor(&copy_cursor, &copy_scroll, copies, COPY_PAGE);
     else if (view == VIEW_FILTER)
         clamp_filter(dex);
@@ -1929,7 +2041,7 @@ static void draw(const Dex *dex)
     use_ink(INK_CREAM);
     if (view == VIEW_FILTER)
         draw_filter(dex);
-    else if (view == VIEW_COPIES)
+    else if (view == VIEW_COPIES || view == VIEW_MOVE)
         draw_copy_list(dex, &rows[dex_cursor]);
     else
         draw_dex_list(dex);
@@ -1942,10 +2054,27 @@ static void draw(const Dex *dex)
         sprites_hide();
         return;
     }
-    if (view == VIEW_COPIES) {
+    if (view == VIEW_COPIES || view == VIEW_MOVE) {
         const SpeciesRow *row = &rows[dex_cursor];
         const MonRef *mon = copies > 0 ? enabled_mon(dex, row, copy_cursor) : NULL;
-        if (mon) {
+        if (view == VIEW_MOVE && (!mon || (mon->flags & MON_EGG)
+                                  || move_cursor < 0 || move_cursor > 3
+                                  || mon->moves[move_cursor] == 0))
+            view = VIEW_COPIES;
+        if (view == VIEW_MOVE) {
+            int index = 0;
+            int total = 0;
+            int i;
+            for (i = 0; i < 4; i++) {
+                if (!mon->moves[i])
+                    continue;
+                if (i == move_cursor)
+                    index = total;
+                total++;
+            }
+            draw_move_card(mon->moves[move_cursor], index, total);
+            sprites_hide();
+        } else if (mon) {
             if (copy_page == CARD_ENTRY)
                 draw_copy_entry(mon->species, mon->form, (mon->flags & MON_SHINY) != 0);
             else if (copy_page == CARD_WEAK)
@@ -1967,7 +2096,7 @@ static void draw(const Dex *dex)
     } else if (row_count > 0) {
         draw_species_card(dex, &rows[dex_cursor]);
     }
-    if (dex->truncated && view != VIEW_COPIES) {
+    if (dex->truncated && view != VIEW_COPIES && view != VIEW_MOVE) {
         at(18, 0);
         use_ink(INK_MUTED);
         fputs("List full.", stdout);
@@ -1992,6 +2121,86 @@ void ui_status(const char *msg)
     swiWaitForVBlank();
     sprites_flush();
     music_pump();
+}
+
+static const MonRef *current_copy(const Dex *dex)
+{
+    int total;
+    if (dex_cursor < 0 || dex_cursor >= row_count)
+        return NULL;
+    total = enabled_stored(dex, &rows[dex_cursor]);
+    if (total <= 0)
+        return NULL;
+    return enabled_mon(dex, &rows[dex_cursor], copy_cursor);
+}
+
+static int first_move_slot(const MonRef *mon)
+{
+    int i;
+    if (!mon || (mon->flags & MON_EGG))
+        return -1;
+    for (i = 0; i < 4; i++) {
+        if (mon->moves[i])
+            return i;
+    }
+    return -1;
+}
+
+static int neighbor_move(const MonRef *mon, int slot, int dir)
+{
+    int i;
+    if (!mon || (mon->flags & MON_EGG))
+        return -1;
+    if (slot < 0 || slot > 3)
+        slot = dir > 0 ? 3 : 0;
+    for (i = 0; i < 4; i++) {
+        slot += dir;
+        if (slot > 3)
+            slot = 0;
+        if (slot < 0)
+            slot = 3;
+        if (mon->moves[slot])
+            return slot;
+    }
+    return -1;
+}
+
+static int touch_row(uint32_t hit)
+{
+    touchPosition touch;
+    int row;
+    if ((hit & KEY_TOUCH) == 0)
+        return -1;
+    touchRead(&touch);
+    if (touch.px < 8)
+        return -1;
+    row = (int)(touch.py / 8) - 1;
+    if (row < 0 || row >= ROWS)
+        return -1;
+    return row;
+}
+
+/* A opens the first move. A tap on one of the four move rows opens that move. */
+static int open_move(const Dex *dex, uint32_t hit)
+{
+    const MonRef *mon;
+    int slot = -1;
+    int row;
+    if (view != VIEW_COPIES || copy_page != CARD_STATS)
+        return 0;
+    mon = current_copy(dex);
+    row = touch_row(hit);
+    if (row >= 10 && row <= 13)
+        slot = row - 10;
+    else if (hit & KEY_A)
+        slot = first_move_slot(mon);
+    else
+        return 0;
+    if (!mon || slot < 0 || slot > 3 || mon->moves[slot] == 0)
+        return 0;
+    move_cursor = slot;
+    view = VIEW_MOVE;
+    return 1;
 }
 
 void ui_run(Dex *dex)
@@ -2146,6 +2355,46 @@ void ui_run(Dex *dex)
         } else if (hit & KEY_X && view == VIEW_DEX) {
             view = VIEW_FILTER;
             filter_pane = PANE_ROOT;
+            music_click();
+            dirty = 1;
+        } else if (view == VIEW_MOVE) {
+            const MonRef *mon = current_copy(dex);
+            if (hit & KEY_B) {
+                view = VIEW_COPIES;
+                music_click();
+                dirty = 1;
+            } else if (hit & (KEY_L | KEY_R)) {
+                view = VIEW_COPIES;
+                if (hit & KEY_L)
+                    copy_page = (copy_page + CARD_PAGES - 1) % CARD_PAGES;
+                if (hit & KEY_R)
+                    copy_page = (copy_page + 1) % CARD_PAGES;
+                music_click();
+                dirty = 1;
+            } else if (row_count > 0 && (down & (KEY_LEFT | KEY_RIGHT))) {
+                int before = dex_cursor;
+                if (down & KEY_LEFT)
+                    dex_cursor--;
+                if (down & KEY_RIGHT)
+                    dex_cursor++;
+                clamp_cursor(&dex_cursor, &dex_scroll, row_count, DEX_PAGE);
+                if (dex_cursor != before) {
+                    view = VIEW_COPIES;
+                    move_cursor = -1;
+                    copy_cursor = 0;
+                    copy_scroll = 0;
+                    music_click();
+                    dirty = 1;
+                }
+            } else if (mon && (down & (KEY_UP | KEY_DOWN))) {
+                int next = neighbor_move(mon, move_cursor, (down & KEY_DOWN) ? 1 : -1);
+                if (next >= 0 && next != move_cursor) {
+                    move_cursor = next;
+                    music_click();
+                    dirty = 1;
+                }
+            }
+        } else if (open_move(dex, hit)) {
             music_click();
             dirty = 1;
         } else if (hit & KEY_B && view == VIEW_COPIES) {

@@ -596,6 +596,36 @@ static void test_battle_stats(Dex *dex)
     free(sav);
 }
 
+static void test_move_info(void)
+{
+    MoveInfo info;
+    CHECK(!move_info(0, &info));
+    CHECK(!move_info(9999, &info));
+    CHECK(strcmp(move_effect(0), "") == 0);
+    CHECK(move_info(33, &info));
+    CHECK(info.category == MOVE_PHYSICAL);
+    CHECK(info.power == 50);
+    CHECK(info.accuracy == 100);
+    CHECK(info.pp == 35);
+    CHECK(info.priority == 0);
+    CHECK(move_info(85, &info));
+    CHECK(info.category == MOVE_SPECIAL);
+    CHECK(info.power == 95);
+    CHECK(info.pp == 15);
+    CHECK(strstr(move_effect(85), "10%"));
+    CHECK(move_info(53, &info) && info.power == 95 && info.category == MOVE_SPECIAL);
+    CHECK(move_info(282, &info) && info.power == 20);
+    CHECK(move_info(129, &info) && info.power == 60 && info.accuracy == 0);
+    CHECK(move_info(204, &info) && info.category == MOVE_STATUS && info.power == 0);
+    CHECK(move_info(237, &info) && info.power == 0);
+    CHECK(strstr(move_effect(237), "30"));
+    CHECK(move_info(22, &info) && info.power == 35 && info.pp == 15);
+    CHECK(strcmp(move_name(98), "Quick Attack") == 0);
+    CHECK(move_info(98, &info) && info.priority == 1);
+    CHECK(move_info(46, &info) && info.priority == -6);
+    CHECK(move_info(245, &info) && info.priority == 2 && info.power == 80);
+}
+
 static void test_types(void)
 {
     CHECK(strcmp(type_name(TYPE_ELECTRIC), "Electric") == 0);
@@ -748,6 +778,7 @@ int main(void)
     test_moves(&dex);
     test_rows(&dex);
     test_battle_stats(&dex);
+    test_move_info();
     test_types();
     test_tidy_name();
     test_rejects_garbage(&dex);

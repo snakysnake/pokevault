@@ -55,6 +55,7 @@ It keeps up to 48 saves and 16,384 Pokémon. Past that, the list says it is full
 
 - Up and Down move between copies
 - L and R switch the bottom screen between Stats, Entry, and Weak
+- A, or a tap on a move, opens that move. Up and Down switch moves, and B returns
 - B goes back to the list
 
 **Filter**

@@ -563,9 +563,30 @@ static const char *const names[] = {
     "Fusion Bolt",
 };
 
+#include "move_info.inc"
+
 const char *move_name(unsigned move)
 {
     if (move >= sizeof names / sizeof names[0])
         return "????";
     return names[move];
+}
+
+int move_info(unsigned move, MoveInfo *out)
+{
+    if (!out || move == 0 || move >= sizeof move_power / sizeof move_power[0])
+        return 0;
+    out->category = move_category[move];
+    out->power = move_power[move];
+    out->accuracy = move_accuracy[move];
+    out->pp = move_pp[move];
+    out->priority = move_priority[move];
+    return 1;
+}
+
+const char *move_effect(unsigned move)
+{
+    if (move >= sizeof move_effects / sizeof move_effects[0])
+        return "";
+    return move_effects[move];
 }
