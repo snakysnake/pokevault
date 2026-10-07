@@ -65,7 +65,7 @@ It keeps up to 48 saves and 16,384 Pokémon. Past that, the list says it is full
 - L and R switch the bottom screen between Stats, Entry, and Weak
 - A, or a tap on a move, highlights that move. A again opens it. Up and Down move the highlight, and B leaves it
 - On a move, Up and Down switch moves, and B returns to the highlight
-- B goes back to the list
+- B goes back to the list. Opened from a party or box, B returns there
 
 **Filter**
 
@@ -73,7 +73,7 @@ It keeps up to 48 saves and 16,384 Pokémon. Past that, the list says it is full
 - Seen: marked seen in a Pokédex
 - In Dex: marked caught in a Pokédex
 - Shiny: a shiny copy is stored
-- Games: turn individual saves on or off
+- Games: turn individual saves on or off. Off also hides that save from the Games list
 - Pokédex: the full National Dex, or only Kanto, Johto, Hoenn, Sinnoh, or Unova
 
 A toggles a row. On Games or Pokédex, A opens that list. B goes back, and from the top of the filter it closes it.
@@ -87,10 +87,13 @@ A toggles a row. On Games or Pokédex, A opens that list. B goes back, and from 
 
 **Games**
 
-- Up and Down scroll the save list
+- Up and Down scroll the save list. A save set to Off in the filter is left out
+- Y asks to hide the save you are on. A hides it, and B cancels. That is the same switch as Filter, Games, Off
+- Turn a hidden save back on from the Pokédex filter, under Games
 - A opens that save's party and boxes
-- In the boxes, the D-pad moves between slots, L and R change box, and A opens that Pokémon in the dex
-- B returns to the menu, or from the boxes back to the save list
+- In the boxes, the D-pad moves between slots, L and R change box, and A opens that Pokémon
+- B from that Pokémon returns to the party or box you opened it from
+- B from the boxes returns to the save list, and from the save list to the menu
 
 **Progress**
 

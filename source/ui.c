@@ -91,6 +91,7 @@ static int page = PAGE_HOME;
 static int home_cursor;
 static int game_cursor;
 static int game_scroll;
+static int hide_ask;
 static int view = VIEW_DEX;
 static int filter_caught;
 static int filter_seen;
@@ -112,6 +113,8 @@ static int goal_saved_cursor;
 static int goal_saved_scroll;
 static int list_span_caught;
 static int boxes_on;
+/* Set while a party or box slot is open, so B returns there. */
+static int from_box;
 static int box_cursor;
 static int slot_cursor;
 static int find_cursor;
@@ -1836,6 +1839,9 @@ static void draw_filter_note(const Dex *dex)
             use_ink(INK_MUTED);
             fputs(info->game, stdout);
         }
+        at(13, 0);
+        use_ink(INK_MUTED);
+        fputs("Off hides it in Games.", stdout);
         return;
     }
     if (filter_pane == PANE_MODE) {
@@ -1995,10 +2001,117 @@ static void value_row(int row, const char *label, const char *value, int value_i
     emit_right(value_ink, value, COLS - 14);
 }
 
+/* game_cursor is a save index. The Games list only shows saves the filter leaves on. */
+static int visible_index_of(const Dex *dex, int save)
+{
+    int i;
+    int n = 0;
+    if (!dex || save < 0 || save >= dex->save_count || !filter_version[save])
+        return -1;
+    for (i = 0; i < save; i++) {
+        if (filter_version[i])
+            n++;
+    }
+    return n;
+}
+
+static int save_at_visible(const Dex *dex, int visible)
+{
+    int i;
+    int n = 0;
+    if (!dex || visible < 0)
+        return -1;
+    for (i = 0; i < dex->save_count; i++) {
+        if (!filter_version[i])
+            continue;
+        if (n == visible)
+            return i;
+        n++;
+    }
+    return -1;
+}
+
+static int nearest_visible_game(const Dex *dex, int save)
+{
+    int i;
+    if (!dex || games_enabled(dex) <= 0)
+        return 0;
+    if (save < 0)
+        save = 0;
+    if (save >= dex->save_count)
+        save = dex->save_count - 1;
+    if (filter_version[save])
+        return save;
+    for (i = save + 1; i < dex->save_count; i++) {
+        if (filter_version[i])
+            return i;
+    }
+    for (i = save - 1; i >= 0; i--) {
+        if (filter_version[i])
+            return i;
+    }
+    return 0;
+}
+
+static void clamp_games(const Dex *dex)
+{
+    int count = games_enabled(dex);
+    int visible = visible_index_of(dex, game_cursor);
+    int save;
+    if (visible < 0)
+        visible = visible_index_of(dex, nearest_visible_game(dex, game_cursor));
+    if (visible < 0)
+        visible = 0;
+    clamp_cursor(&visible, &game_scroll, count, GAME_PAGE);
+    if (count <= 0)
+        return;
+    save = save_at_visible(dex, visible);
+    if (save >= 0)
+        game_cursor = save;
+}
+
+static void move_games(const Dex *dex, uint32_t down)
+{
+    int count = games_enabled(dex);
+    int visible = visible_index_of(dex, game_cursor);
+    int save;
+    if (count <= 0)
+        return;
+    if (visible < 0)
+        visible = 0;
+    nudge(&visible, count, GAME_PAGE, down);
+    clamp_cursor(&visible, &game_scroll, count, GAME_PAGE);
+    save = save_at_visible(dex, visible);
+    if (save >= 0)
+        game_cursor = save;
+}
+
+static void hide_selected_game(const Dex *dex)
+{
+    int saved = game_cursor;
+    uint16_t species = 0;
+    int keep = 0;
+    if (!dex || saved < 0 || saved >= dex->save_count)
+        return;
+    if (dex_cursor >= 0 && dex_cursor < row_count) {
+        species = rows[dex_cursor].species;
+        keep = 1;
+    }
+    filter_version[saved] = 0;
+    game_cursor = nearest_visible_game(dex, saved);
+    clamp_games(dex);
+    apply_filter(dex);
+    if (keep)
+        select_species(species);
+    else
+        clamp_cursor(&dex_cursor, &dex_scroll, row_count, DEX_PAGE);
+}
+
 static void draw_games(const Dex *dex)
 {
+    int count;
     int last;
-    int i;
+    int visible;
     char right[24];
     if (dex->save_count <= 0) {
         title_row(0, "Games", "");
@@ -2008,20 +2121,38 @@ static void draw_games(const Dex *dex)
         fputs("No saves.", stdout);
         return;
     }
-    clamp_cursor(&game_cursor, &game_scroll, dex->save_count, GAME_PAGE);
-    snprintf(right, sizeof right, "%d/%d", game_cursor + 1, dex->save_count);
+    count = games_enabled(dex);
+    if (count <= 0) {
+        title_row(0, "Games", "0");
+        rule_row(1);
+        at(3, 0);
+        use_ink(INK_MUTED);
+        fputs("Every game is hidden.", stdout);
+        return;
+    }
+    clamp_games(dex);
+    visible = visible_index_of(dex, game_cursor);
+    if (visible < 0)
+        visible = 0;
+    snprintf(right, sizeof right, "%d/%d", visible + 1, count);
     title_row(0, "Games", right);
     rule_row(1);
     last = game_scroll + GAME_PAGE;
-    if (last > dex->save_count)
-        last = dex->save_count;
-    for (i = game_scroll; i < last; i++) {
-        const SaveInfo *info = &dex->saves[i];
+    if (last > count)
+        last = count;
+    for (visible = game_scroll; visible < last; visible++) {
+        int save = save_at_visible(dex, visible);
+        const SaveInfo *info;
         char play[16];
         char dexn[12];
-        int row = 2 + (i - game_scroll) * 3;
-        int on = i == game_cursor;
-        int cap = game_national(info);
+        int row = 2 + (visible - game_scroll) * 3;
+        int on;
+        int cap;
+        if (save < 0)
+            continue;
+        info = &dex->saves[save];
+        on = save == game_cursor;
+        cap = game_national(info);
         format_play(info, play, sizeof play);
         snprintf(dexn, sizeof dexn, "%d/%d", dex_flag_count(info, 1, cap), cap);
         at(row, 0);
@@ -2059,6 +2190,19 @@ static void draw_game_card(const Dex *dex)
         fputs("roms/nds/saves", stdout);
         at(10, 0);
         fputs("or roms/gba.", stdout);
+        at(21, 0);
+        fputs("B back", stdout);
+        return;
+    }
+    if (games_enabled(dex) <= 0) {
+        at(8, 0);
+        use_ink(INK_CREAM);
+        fputs("Turn a save back on", stdout);
+        at(9, 0);
+        fputs("from the Pokedex filter.", stdout);
+        at(11, 0);
+        use_ink(INK_MUTED);
+        fputs("X, then Games.", stdout);
         at(21, 0);
         fputs("B back", stdout);
         return;
@@ -2110,8 +2254,38 @@ static void draw_game_card(const Dex *dex)
     at(21, 0);
     use_ink(INK_MUTED);
     fputs("A boxes", stdout);
+    at(21, 12);
+    fputs("Y hide", stdout);
     at(21, COLS - 6);
     fputs("B back", stdout);
+}
+
+static void draw_hide_confirm(const Dex *dex)
+{
+    const SaveInfo *info;
+    if (game_cursor < 0 || game_cursor >= dex->save_count || !filter_version[game_cursor]) {
+        hide_ask = 0;
+        draw_game_card(dex);
+        return;
+    }
+    info = &dex->saves[game_cursor];
+    at(8, 0);
+    use_ink(INK_CREAM);
+    fputs("Hide this game?", stdout);
+    at(10, 0);
+    emit(INK_GOLD, profile_name(info), COLS);
+    if (info->game[0]) {
+        at(11, 0);
+        use_ink(INK_MUTED);
+        fputs(info->game, stdout);
+    }
+    at(13, 0);
+    use_ink(INK_MUTED);
+    fputs("Also hidden in the dex.", stdout);
+    at(21, 0);
+    fputs("A hide", stdout);
+    at(21, COLS - 8);
+    fputs("B cancel", stdout);
 }
 
 /* Living, dex, and seen counts for all 649 species. Saves switched off are left out.
@@ -2810,6 +2984,7 @@ static void open_boxed(const Dex *dex)
     if (!species_listed(mon->species))
         return;
     boxes_on = 0;
+    from_box = 1;
     page = PAGE_DEX;
     view = VIEW_COPIES;
     copy_page = CARD_STATS;
@@ -2924,8 +3099,12 @@ static void draw(const Dex *dex)
         consoleSelect(&bottom_console);
         consoleClear();
         use_ink(INK_CREAM);
-        if (page == PAGE_GAMES)
-            draw_game_card(dex);
+        if (page == PAGE_GAMES) {
+            if (hide_ask)
+                draw_hide_confirm(dex);
+            else
+                draw_game_card(dex);
+        }
         else if (page == PAGE_PROGRESS)
             draw_progress_note(dex);
         else
@@ -3153,6 +3332,7 @@ void ui_run(Dex *dex)
     goal_hunt = 0;
     goal_cursor = 0;
     boxes_on = 0;
+    from_box = 0;
     box_cursor = 0;
     slot_cursor = 0;
     find_cursor = 0;
@@ -3163,6 +3343,7 @@ void ui_run(Dex *dex)
     home_cursor = 0;
     game_cursor = 0;
     game_scroll = 0;
+    hide_ask = 0;
     view = VIEW_DEX;
     dex_cursor = 0;
     dex_scroll = 0;
@@ -3231,8 +3412,10 @@ void ui_run(Dex *dex)
         if (page == PAGE_HOME) {
             if (hit & KEY_A) {
                 page = home_cursor + 1;
-                if (page == PAGE_GAMES)
-                    clamp_cursor(&game_cursor, &game_scroll, dex->save_count, GAME_PAGE);
+                if (page == PAGE_GAMES) {
+                    hide_ask = 0;
+                    clamp_games(dex);
+                }
                 music_click();
                 dirty = 1;
             } else if (down & (KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT)) {
@@ -3249,6 +3432,18 @@ void ui_run(Dex *dex)
                     music_click();
                     dirty = 1;
                 }
+            }
+        } else if (page == PAGE_GAMES && hide_ask) {
+            if (hit & KEY_A && game_cursor >= 0 && game_cursor < dex->save_count
+                && filter_version[game_cursor]) {
+                hide_selected_game(dex);
+                hide_ask = 0;
+                music_click();
+                dirty = 1;
+            } else if (hit & KEY_B) {
+                hide_ask = 0;
+                music_click();
+                dirty = 1;
             }
         } else if (page == PAGE_GAMES && boxes_on) {
             if (hit & KEY_B) {
@@ -3284,21 +3479,25 @@ void ui_run(Dex *dex)
                 }
             }
         } else if (page == PAGE_GAMES) {
-            if (hit & KEY_A && dex->save_count > 0) {
+            if (hit & KEY_A && games_enabled(dex) > 0) {
                 boxes_on = 1;
                 box_cursor = 0;
                 slot_cursor = 0;
                 music_click();
                 dirty = 1;
+            } else if (hit & KEY_Y && games_enabled(dex) > 0) {
+                hide_ask = 1;
+                music_click();
+                dirty = 1;
             } else if (hit & KEY_B) {
+                hide_ask = 0;
                 page = PAGE_HOME;
                 music_click();
                 dirty = 1;
-            } else if (dex->save_count > 0
+            } else if (games_enabled(dex) > 0
                        && (down & (KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT | KEY_L | KEY_R))) {
                 int before = game_cursor;
-                nudge(&game_cursor, dex->save_count, GAME_PAGE, down);
-                clamp_cursor(&game_cursor, &game_scroll, dex->save_count, GAME_PAGE);
+                move_games(dex, down);
                 if (game_cursor != before) {
                     music_click();
                     dirty = 1;
@@ -3493,7 +3692,14 @@ void ui_run(Dex *dex)
                 dirty = 1;
             }
         } else if (hit & KEY_B && view == VIEW_COPIES) {
-            view = VIEW_DEX;
+            if (from_box) {
+                from_box = 0;
+                boxes_on = 1;
+                page = PAGE_GAMES;
+                view = VIEW_DEX;
+            } else {
+                view = VIEW_DEX;
+            }
             music_click();
             dirty = 1;
         } else if (hit & KEY_B && view == VIEW_DEX) {
