@@ -27,7 +27,7 @@ A single Pokémon shows:
 - Type weaknesses
 - A sprite, including the shiny sprite
 
-The home menu also has a Games page and a Progress page. Games lists each save with the trainer name, money, play time, and Pokédex count. Open a save to see its party and boxes. Progress is one bar for the current list: shiny, stored, caught in a Pokédex, seen, and not seen. It also counts a living dex, and the formes you have for Unown, Shellos, Rotom, Deerling, and the other shapes the saves record.
+The home menu also has a Games page and a Progress page. Games lists each save with the trainer name, money, play time, and Pokédex count. Open a save to see its party and boxes. Progress is a living dex across the saves left switched on. The top screen is the bar and the five regions. The bottom screen is the highlighted region's ladder: in the dex, living, shiny, seen, and never seen. A copy in a box counts as living, and also as in the dex and seen. Shiny is part of that living count. A region reads Complete once a hatched copy of each of its species is in a box. Eggs do not fill a spot. It also counts the formes you have for Unown, Shellos, Rotom, Deerling, and the other shapes the saves record.
 
 ## Saves it reads
 
@@ -85,12 +85,20 @@ A toggles a row. On Games or Pokédex, A opens that list. B goes back, and from 
 - B deletes a letter, and leaves Find when the query is empty
 - Y closes Find and keeps the query
 
-**Games and Progress**
+**Games**
 
 - Up and Down scroll the save list
 - A opens that save's party and boxes
 - In the boxes, the D-pad moves between slots, L and R change box, and A opens that Pokémon in the dex
 - B returns to the menu, or from the boxes back to the save list
+
+**Progress**
+
+- Up and Down move between Kanto, Johto, Hoenn, Sinnoh, and Unova
+- A opens the species from that region that are still missing from a box. Registered holes come first, then seen, then never seen
+- On that list, A opens a species. B returns to Progress
+- When nothing is missing, the list reads Complete
+- B returns to the menu
 
 ## Running it
 

@@ -51,6 +51,7 @@ enum {
     DEX_SINNOH = 4,
     DEX_UNOVA = 5,
     DEX_MODES = 6,
+    GOAL_COUNT = 5,
     INK_SHINY = 6,
     INK_MUTED = 8,
     INK_GOLD = 11,
@@ -104,6 +105,11 @@ static int game_filter_scroll;
 static int mode_cursor;
 static int mode_scroll;
 static int dex_mode;
+/* 0 browses the filtered dex. DEX_KANTO through DEX_UNOVA is a region's missing list. */
+static int goal_hunt;
+static int goal_cursor;
+static int goal_saved_cursor;
+static int goal_saved_scroll;
 static int list_span_caught;
 static int boxes_on;
 static int box_cursor;
@@ -501,6 +507,26 @@ static void measure_species(const Dex *dex, const SpeciesRow *row, int *stored, 
     }
 }
 
+/* Hatched copies on saves the filter still includes. An egg is not living. */
+static void living_marks(const Dex *dex, const SpeciesRow *row, int *living, int *shiny)
+{
+    int i;
+    *living = 0;
+    *shiny = 0;
+    if (!dex || !row)
+        return;
+    for (i = 0; i < row->count; i++) {
+        const MonRef *mon = &dex->mons[row->first + i];
+        if (!version_on(dex, mon->save_index))
+            continue;
+        if (mon->flags & MON_EGG)
+            continue;
+        (*living)++;
+        if (mon->flags & MON_SHINY)
+            *shiny = 1;
+    }
+}
+
 static int species_from_disabled_only(const Dex *dex, const SpeciesRow *row)
 {
     int i;
@@ -626,11 +652,53 @@ static int query_matches(const Dex *dex, const SpeciesRow *row)
     return 0;
 }
 
+/* Missing species for one region. Registered holes first, then seen, then never seen. */
+static void apply_goal_rows(const Dex *dex)
+{
+    int first;
+    int last;
+    int species;
+    int pass;
+    mode_range(goal_hunt, &first, &last);
+    row_count = 0;
+    list_span_caught = 0;
+    for (pass = 0; pass < 3; pass++) {
+        for (species = first; species <= last; species++) {
+            const SpeciesRow *row = &catalog[species - 1];
+            int seen;
+            int in_dex;
+            int living;
+            int scratch;
+            int rank;
+            living_marks(dex, row, &living, &scratch);
+            if (living > 0) {
+                if (pass == 0)
+                    list_span_caught++;
+                continue;
+            }
+            measure_species(dex, row, &scratch, &scratch, &seen, &in_dex);
+            if (in_dex)
+                rank = 0;
+            else if (seen)
+                rank = 1;
+            else
+                rank = 2;
+            if (rank != pass)
+                continue;
+            rows[row_count++] = *row;
+        }
+    }
+}
+
 static void apply_filter(const Dex *dex)
 {
     int i;
     int n = 0;
     int owned = 0;
+    if (goal_hunt) {
+        apply_goal_rows(dex);
+        return;
+    }
     for (i = 0; i < NATIONAL_DEX; i++) {
         int stored;
         int shiny;
@@ -787,19 +855,22 @@ static void draw_dex_row(const Dex *dex, int row, const SpeciesRow *entry, int s
     char num[8];
     char qty[16];
     int stored;
+    int living;
     int seen;
     int in_dex;
     int ignore;
     int ink;
     int name_ink;
     measure_species(dex, entry, &stored, &ignore, &seen, &in_dex);
-    (void)ignore;
+    living_marks(dex, entry, &living, &ignore);
     ink = selected ? INK_GOLD : INK_MUTED;
-    name_ink = selected ? INK_GOLD : (stored > 0 ? INK_CREAM : INK_MUTED);
+    name_ink = selected ? INK_GOLD : (living > 0 ? INK_CREAM : INK_MUTED);
     qty[0] = 0;
     snprintf(num, sizeof num, "#%03u", entry->species);
-    if (stored > 0)
-        snprintf(qty, sizeof qty, "x%u", (unsigned)stored);
+    if (living > 0)
+        snprintf(qty, sizeof qty, "x%u", (unsigned)living);
+    else if (stored > 0)
+        snprintf(qty, sizeof qty, "Egg");
     else if (in_dex)
         snprintf(qty, sizeof qty, "Dex");
     else if (seen)
@@ -846,6 +917,8 @@ static const char *list_heading(const Dex *dex)
 {
     int n = (filter_caught ? 1 : 0) + (filter_seen ? 1 : 0) + (filter_dex ? 1 : 0)
         + (filter_shiny ? 1 : 0) + (versions_narrowed(dex) ? 1 : 0);
+    if (goal_hunt)
+        return dex_mode_name(goal_hunt);
     if (find_query[0])
         return find_query;
     if (n == 0)
@@ -870,13 +943,29 @@ static void draw_dex_list(const Dex *dex)
     int shown = name_narrowed(dex) ? row_count : list_span_caught;
     int i;
     int last;
-    snprintf(right, sizeof right, "%d/%d", shown, mode_span());
+    if (goal_hunt) {
+        if (row_count == 0)
+            snprintf(right, sizeof right, "Done");
+        else
+            snprintf(right, sizeof right, "%d left", row_count);
+    } else {
+        snprintf(right, sizeof right, "%d/%d", shown, mode_span());
+    }
     title_row(0, heading, right);
     rule_row(1);
     if (row_count == 0) {
         at(3, 0);
-        use_ink(INK_MUTED);
-        fputs("Nothing matches.", stdout);
+        use_ink(goal_hunt ? INK_GOLD : INK_MUTED);
+        if (goal_hunt) {
+            int first;
+            int last_species;
+            mode_range(goal_hunt, &first, &last_species);
+            fputs("Complete", stdout);
+            at(5, 0);
+            printf("%d / %d", last_species - first + 1, last_species - first + 1);
+        } else {
+            fputs("Nothing matches.", stdout);
+        }
         return;
     }
     last = dex_scroll + DEX_PAGE;
@@ -953,17 +1042,19 @@ static void draw_completion(int row, int shiny, int stored, int in_dex, int seen
 static void draw_species_card(const Dex *dex, const SpeciesRow *row)
 {
     const MonRef *face;
-    int stored = 0;
-    int shiny = 0;
+    int scratch = 0;
+    int shiny_live = 0;
     int seen = 0;
     int in_dex = 0;
+    int living = 0;
     int eggs = 0;
     int i;
     int line = 3;
     char buf[16];
 
     face = best_mon(dex, row);
-    measure_species(dex, row, &stored, &shiny, &seen, &in_dex);
+    measure_species(dex, row, &scratch, &scratch, &seen, &in_dex);
+    living_marks(dex, row, &living, &shiny_live);
     for (i = 0; i < row->count; i++) {
         const MonRef *mon = &dex->mons[row->first + i];
         if (version_on(dex, mon->save_index) && (mon->flags & MON_EGG))
@@ -977,8 +1068,8 @@ static void draw_species_card(const Dex *dex, const SpeciesRow *row)
     fputs(species_name(row->species), stdout);
 
     draw_types_at(1, species_type(row->species, 0), species_type2(row->species, 0));
-    if (stored > 0) {
-        snprintf(buf, sizeof buf, "x%d", stored);
+    if (living > 0) {
+        snprintf(buf, sizeof buf, "x%d", living);
         at(1, COLS - text_len(buf));
         use_ink(INK_GOLD);
         fputs(buf, stdout);
@@ -1000,7 +1091,7 @@ static void draw_species_card(const Dex *dex, const SpeciesRow *row)
     else
         sprites_show(row->species, 0, 0);
 
-    draw_completion(line + 2, shiny, stored, in_dex, seen);
+    draw_completion(line + 2, shiny_live, living, in_dex, seen);
     if (eggs > 0) {
         at(line + 7, 0);
         use_ink(INK_MUTED);
@@ -1884,11 +1975,11 @@ static void draw_home_note(void)
         at(9, 0);
         fputs("the boxes on that save.", stdout);
     } else {
-        fputs("Stored fills the bar", stdout);
+        fputs("Each region can be", stdout);
         at(9, 0);
-        fputs("to 100%. Shiny goes", stdout);
+        fputs("finished. A opens", stdout);
         at(10, 0);
-        fputs("past that.", stdout);
+        fputs("what is still missing.", stdout);
     }
     at(20, 0);
     use_ink(INK_MUTED);
@@ -2023,6 +2114,8 @@ static void draw_game_card(const Dex *dex)
     fputs("B back", stdout);
 }
 
+/* Living, dex, and seen counts for all 649 species. Saves switched off are left out.
+   Eggs do not count as living. Shiny, stored, in dex, and seen are exclusive. */
 static void tally_progress(const Dex *dex, int *shiny, int *stored, int *in_dex, int *seen, int *unseen)
 {
     int i;
@@ -2031,17 +2124,24 @@ static void tally_progress(const Dex *dex, int *shiny, int *stored, int *in_dex,
     *in_dex = 0;
     *seen = 0;
     *unseen = 0;
-    for (i = 0; i < row_count; i++) {
+    for (i = 0; i < NATIONAL_DEX; i++) {
+        int living;
+        int shiny_live;
         int st;
         int sh;
         int saw;
         int owned;
-        measure_species(dex, &rows[i], &st, &sh, &saw, &owned);
-        if (sh)
+        living_marks(dex, &catalog[i], &living, &shiny_live);
+        if (living > 0 && shiny_live) {
             (*shiny)++;
-        else if (st > 0)
+            continue;
+        }
+        if (living > 0) {
             (*stored)++;
-        else if (owned)
+            continue;
+        }
+        measure_species(dex, &catalog[i], &st, &sh, &saw, &owned);
+        if (owned)
             (*in_dex)++;
         else if (saw)
             (*seen)++;
@@ -2106,26 +2206,43 @@ static void draw_progress_bar(int row, const int *counts, const int *inks, int t
         fill_px(inks[i], px[i]);
 }
 
-static void legend_line(int row, int ink, const char *label, int count)
+/* Hatched copies in one regional dex. registered, saw, and unseen are the holes. */
+static void tally_goal(const Dex *dex, int mode, int *have, int *total, int *registered, int *saw,
+                       int *unseen)
 {
-    char num[8];
-    snprintf(num, sizeof num, "%d", count);
-    at(row, 0);
-    use_ink(ink);
-    putchar(0x18);
-    putchar(' ');
-    emit(INK_CREAM, label, 16);
-    emit_right(INK_GOLD, num, 6);
-}
-
-static int list_filtered(const Dex *dex)
-{
-    return name_narrowed(dex) || dex_mode != DEX_ALL;
+    int first;
+    int last;
+    int species;
+    mode_range(mode, &first, &last);
+    *have = 0;
+    *total = last - first + 1;
+    *registered = 0;
+    *saw = 0;
+    *unseen = 0;
+    for (species = first; species <= last; species++) {
+        const SpeciesRow *row = &catalog[species - 1];
+        int living;
+        int seen;
+        int in_dex;
+        int scratch;
+        living_marks(dex, row, &living, &scratch);
+        if (living > 0) {
+            (*have)++;
+            continue;
+        }
+        measure_species(dex, row, &scratch, &scratch, &seen, &in_dex);
+        if (in_dex)
+            (*registered)++;
+        else if (seen)
+            (*saw)++;
+        else
+            (*unseen)++;
+    }
 }
 
 static int species_listed(uint16_t species);
 
-/* Formes the save actually indexes. Counted only for species on the current list. */
+/* Formes the save actually indexes. Eggs do not count, and saves switched off are left out. */
 static const struct {
     uint16_t species;
     uint8_t forms;
@@ -2158,8 +2275,6 @@ static void tally_formes(const Dex *dex, int *have, int *total)
         int i;
         if (forms > 31)
             forms = 31;
-        if (!species_listed(species))
-            continue;
         *total += (int)forms;
         for (i = 0; i < dex->mon_count; i++) {
             const MonRef *mon = &dex->mons[i];
@@ -2183,11 +2298,16 @@ static void draw_progress(const Dex *dex)
     int unseen;
     int formes_have;
     int formes_total;
-    int total = row_count;
+    int total = NATIONAL_DEX;
     int boxed;
     int counts[5];
     int inks[4];
+    int g;
     char right[12];
+    if (goal_cursor < 0)
+        goal_cursor = 0;
+    if (goal_cursor >= GOAL_COUNT)
+        goal_cursor = GOAL_COUNT - 1;
     tally_progress(dex, &shiny, &stored, &in_dex, &seen, &unseen);
     boxed = shiny + stored;
     snprintf(right, sizeof right, "%d%%", percent_of(boxed, total));
@@ -2209,46 +2329,124 @@ static void draw_progress(const Dex *dex)
     inks[2] = 10;
     inks[3] = INK_MUTED;
     draw_progress_bar(5, counts, inks, total);
-    at(7, 0);
-    use_ink(INK_MUTED);
-    fputs("Shiny", stdout);
-    at(7, 18);
-    use_ink(INK_SHINY);
-    printf("%d / %d", shiny, total);
-    legend_line(9, INK_SHINY, "Shiny", shiny);
-    legend_line(10, INK_GOLD, "In box", stored);
-    legend_line(11, 10, "In dex", in_dex);
-    legend_line(12, INK_MUTED, "Seen", seen);
-    legend_line(13, 0, "Not seen", unseen);
+    for (g = 0; g < GOAL_COUNT; g++) {
+        int have;
+        int goal_total;
+        int registered;
+        int saw;
+        int missing;
+        int on = g == goal_cursor;
+        int done;
+        char num[16];
+        int row = 7 + g;
+        tally_goal(dex, DEX_KANTO + g, &have, &goal_total, &registered, &saw, &missing);
+        done = have >= goal_total && goal_total > 0;
+        if (done)
+            snprintf(num, sizeof num, "Complete");
+        else
+            snprintf(num, sizeof num, "%d/%d", have, goal_total);
+        at(row, 0);
+        emit(on ? INK_GOLD : INK_CREAM, on ? ">" : "", 2);
+        emit(on ? INK_GOLD : INK_CREAM, dex_mode_name(DEX_KANTO + g), 12);
+        emit_right(done ? INK_GOLD : (on ? INK_GOLD : INK_MUTED), num, COLS - 14);
+    }
     tally_formes(dex, &formes_have, &formes_total);
-    at(15, 0);
+    at(13, 0);
     use_ink(INK_MUTED);
     fputs("Formes", stdout);
-    at(15, 18);
+    at(13, 18);
     use_ink(INK_GOLD);
     printf("%d / %d", formes_have, formes_total);
 }
 
+/* A copy in a box counts as living, in the dex, and seen. Shiny is part of living. */
+static void tally_ladder(const Dex *dex, int mode, int *in_dex, int *living, int *shiny, int *seen,
+                         int *never_seen, int *total)
+{
+    int first;
+    int last;
+    int species;
+    mode_range(mode, &first, &last);
+    *in_dex = 0;
+    *living = 0;
+    *shiny = 0;
+    *seen = 0;
+    *never_seen = 0;
+    *total = last - first + 1;
+    for (species = first; species <= last; species++) {
+        const SpeciesRow *row = &catalog[species - 1];
+        int have;
+        int shiny_live;
+        int saw;
+        int owned;
+        int scratch;
+        living_marks(dex, row, &have, &shiny_live);
+        measure_species(dex, row, &scratch, &scratch, &saw, &owned);
+        if (have > 0) {
+            (*living)++;
+            if (shiny_live)
+                (*shiny)++;
+        }
+        if (owned || have > 0)
+            (*in_dex)++;
+        if (saw || owned || have > 0)
+            (*seen)++;
+        else
+            (*never_seen)++;
+    }
+}
+
+static void ladder_row(int row, const char *label, int count, int total, int ink)
+{
+    char num[16];
+    snprintf(num, sizeof num, "%d/%d", count, total);
+    at(row, 0);
+    emit(ink, label, 14);
+    emit_right(ink, num, COLS - 14);
+}
+
 static void draw_progress_note(const Dex *dex)
 {
+    int in_dex;
+    int living;
+    int shiny;
+    int seen;
+    int never_seen;
+    int total;
+    int mode;
+    if (goal_cursor < 0)
+        goal_cursor = 0;
+    if (goal_cursor >= GOAL_COUNT)
+        goal_cursor = GOAL_COUNT - 1;
+    mode = DEX_KANTO + goal_cursor;
+    tally_ladder(dex, mode, &in_dex, &living, &shiny, &seen, &never_seen, &total);
+    at(0, 0);
+    use_ink(INK_GOLD);
+    fputs(dex_mode_name(mode), stdout);
+    ladder_row(2, "In dex", in_dex, total, 10);
+    ladder_row(3, "Living", living, total, INK_GOLD);
+    ladder_row(4, "  Shiny", shiny, total, INK_SHINY);
+    ladder_row(5, "Seen", seen, total, INK_CREAM);
+    ladder_row(6, "Never seen", never_seen, total, INK_MUTED);
     at(8, 0);
     use_ink(INK_CREAM);
-    fputs("Living is one of each", stdout);
-    at(10, 0);
-    fputs("still in a box.", stdout);
-    at(11, 0);
-    fputs("Formes count Unown,", stdout);
-    at(12, 0);
-    fputs("Shellos, Rotom,", stdout);
-    at(13, 0);
-    fputs("Deerling, and the rest.", stdout);
-    if (list_filtered(dex)) {
-        at(16, 0);
+    fputs("One in a box counts.", stdout);
+    at(9, 0);
+    fputs("Eggs do not.", stdout);
+    if (versions_narrowed(dex)) {
+        at(11, 0);
         use_ink(INK_MUTED);
-        fputs("Uses the current list.", stdout);
+        fputs("Uses the saves left on.", stdout);
     }
+    at(13, 0);
+    use_ink(INK_MUTED);
+    fputs("Formes are Unown and", stdout);
+    at(14, 0);
+    fputs("the other shapes.", stdout);
     at(21, 0);
     use_ink(INK_MUTED);
+    fputs("A missing", stdout);
+    at(21, COLS - 6);
     fputs("B back", stdout);
 }
 
@@ -2258,6 +2456,16 @@ static void draw_controls(const Dex *dex)
         return;
     at(19, 0);
     use_ink(INK_MUTED);
+    if (goal_hunt) {
+        if (row_count > 0)
+            fputs("D-pad scroll    L/R page", stdout);
+        at(21, 0);
+        if (row_count > 0)
+            fputs("A open", stdout);
+        at(21, COLS - 6);
+        fputs("B back", stdout);
+        return;
+    }
     fputs("D-pad scroll    L/R page", stdout);
     at(20, 0);
     if (row_count > 0)
@@ -2287,11 +2495,19 @@ static int saver_alive(const MonRef *mon)
         && mon->species >= 1 && mon->species <= NATIONAL_DEX;
 }
 
-/* rows[] is the filtered list, in national order. */
+/* rows[] is the filtered list. A goal hunt is grouped, so that list is not in national order. */
 static int species_listed(uint16_t species)
 {
+    int i;
     int lo = 0;
     int hi = row_count;
+    if (goal_hunt) {
+        for (i = 0; i < row_count; i++) {
+            if (rows[i].species == species)
+                return 1;
+        }
+        return 0;
+    }
     while (lo < hi) {
         int mid = lo + (hi - lo) / 2;
         if (rows[mid].species < species)
@@ -2793,6 +3009,19 @@ static void draw(const Dex *dex)
         }
     } else if (row_count > 0) {
         draw_species_card(dex, &rows[dex_cursor]);
+    } else if (goal_hunt && view == VIEW_DEX) {
+        int first;
+        int last_species;
+        mode_range(goal_hunt, &first, &last_species);
+        at(8, 0);
+        use_ink(INK_GOLD);
+        fputs(dex_mode_name(goal_hunt), stdout);
+        at(10, 0);
+        use_ink(INK_CREAM);
+        fputs("Complete", stdout);
+        at(12, 0);
+        use_ink(INK_GOLD);
+        printf("%d / %d", last_species - first + 1, last_species - first + 1);
     }
     if (dex->truncated && view != VIEW_COPIES && view != VIEW_PICK && view != VIEW_MOVE) {
         at(18, 0);
@@ -2921,6 +3150,8 @@ void ui_run(Dex *dex)
     mode_cursor = 0;
     mode_scroll = 0;
     dex_mode = DEX_ALL;
+    goal_hunt = 0;
+    goal_cursor = 0;
     boxes_on = 0;
     box_cursor = 0;
     slot_cursor = 0;
@@ -3074,10 +3305,38 @@ void ui_run(Dex *dex)
                 }
             }
         } else if (page == PAGE_PROGRESS) {
-            if (hit & KEY_B) {
+            if (hit & KEY_A) {
+                goal_hunt = DEX_KANTO + goal_cursor;
+                goal_saved_cursor = dex_cursor;
+                goal_saved_scroll = dex_scroll;
+                page = PAGE_DEX;
+                view = VIEW_DEX;
+                apply_filter(dex);
+                dex_cursor = 0;
+                dex_scroll = 0;
+                copy_cursor = 0;
+                copy_scroll = 0;
+                clamp_cursor(&dex_cursor, &dex_scroll, row_count, DEX_PAGE);
+                music_click();
+                dirty = 1;
+            } else if (hit & KEY_B) {
                 page = PAGE_HOME;
                 music_click();
                 dirty = 1;
+            } else if (down & (KEY_UP | KEY_DOWN)) {
+                int before = goal_cursor;
+                if (down & KEY_UP)
+                    goal_cursor--;
+                if (down & KEY_DOWN)
+                    goal_cursor++;
+                if (goal_cursor < 0)
+                    goal_cursor = 0;
+                if (goal_cursor >= GOAL_COUNT)
+                    goal_cursor = GOAL_COUNT - 1;
+                if (goal_cursor != before) {
+                    music_click();
+                    dirty = 1;
+                }
             }
         } else if (view == VIEW_FILTER) {
             if (hit & KEY_X || (hit & KEY_B && filter_pane == PANE_ROOT)) {
@@ -3171,11 +3430,11 @@ void ui_run(Dex *dex)
                     dirty = 1;
                 }
             }
-        } else if (hit & KEY_Y && view == VIEW_DEX) {
+        } else if (hit & KEY_Y && view == VIEW_DEX && !goal_hunt) {
             view = VIEW_FIND;
             music_click();
             dirty = 1;
-        } else if (hit & KEY_X && view == VIEW_DEX) {
+        } else if (hit & KEY_X && view == VIEW_DEX && !goal_hunt) {
             view = VIEW_FILTER;
             filter_pane = PANE_ROOT;
             music_click();
@@ -3238,7 +3497,15 @@ void ui_run(Dex *dex)
             music_click();
             dirty = 1;
         } else if (hit & KEY_B && view == VIEW_DEX) {
-            page = PAGE_HOME;
+            if (goal_hunt) {
+                goal_hunt = 0;
+                page = PAGE_PROGRESS;
+                dex_cursor = goal_saved_cursor;
+                dex_scroll = goal_saved_scroll;
+                apply_filter(dex);
+            } else {
+                page = PAGE_HOME;
+            }
             music_click();
             dirty = 1;
         } else if (hit & KEY_A && view == VIEW_DEX && row_count > 0) {
