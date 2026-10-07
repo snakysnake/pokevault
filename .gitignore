@@ -1,4 +1,5 @@
 tools/cache/
 tools/.pydeps/
 nitro/music/
+nitro/sprites.bin
 .DS_Store

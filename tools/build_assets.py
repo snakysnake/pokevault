@@ -318,13 +318,15 @@ def build_sprites(names):
 
 
 def main():
+    sprites_only = "--sprites" in sys.argv[1:]
     names = species_names()
     assert slugify("Mr. Mime") == "mr-mime"
     assert slugify("Farfetch'd") == "farfetchd"
     assert slugify("Mime Jr.") == "mime-jr"
     assert slugify("Nidoran-F") == "nidoran-f"
     assert slugify("Ho-Oh") == "ho-oh"
-    write_moves()
+    if not sprites_only:
+        write_moves()
     build_sprites(names)
 
 
