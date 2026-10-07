@@ -59,7 +59,10 @@ enum {
     CARD_STATS = 0,
     CARD_ENTRY = 1,
     CARD_WEAK = 2,
-    CARD_PAGES = 3
+    CARD_PAGES = 3,
+    /* Idle long enough to read as "put the DS down", then a few seconds on each Pokémon. */
+    SAVER_IDLE = 20 * 60,
+    SAVER_HOLD = 4 * 60
 };
 
 /* Glyphs 0x11-0x18 are stat bars. 0x19 is the title rule.
@@ -98,6 +101,12 @@ static int mode_cursor;
 static int mode_scroll;
 static int dex_mode;
 static int list_span_caught;
+static int idle_frames;
+static int saver_on;
+static int saver_mon = -1;
+static int saver_hold;
+static int saver_tick;
+static uint32_t saver_rng = 0x6D2B79F5u;
 
 static const char *const ink_code[16] = {
     "\x1b[30;0m", "\x1b[31;0m", "\x1b[32;0m", "\x1b[33;0m",
@@ -1990,9 +1999,117 @@ static void draw_controls(const Dex *dex)
     fputs("B menu", stdout);
 }
 
+static void center_line(int row, int ink, const char *text)
+{
+    int len = text_len(text);
+    if (!text)
+        return;
+    if (len > COLS)
+        len = COLS;
+    at(row, (COLS - len) / 2);
+    use_ink(ink);
+    while (len-- > 0)
+        putchar((unsigned char)*text++);
+}
+
+static int saver_alive(const MonRef *mon)
+{
+    return mon && (mon->flags & MON_EGG) == 0
+        && mon->species >= 1 && mon->species <= NATIONAL_DEX;
+}
+
+static int saver_count(const Dex *dex)
+{
+    int i;
+    int n = 0;
+    for (i = 0; i < dex->mon_count; i++) {
+        if (saver_alive(&dex->mons[i]))
+            n++;
+    }
+    return n;
+}
+
+static int saver_nth(const Dex *dex, int nth)
+{
+    int i;
+    int seen = 0;
+    for (i = 0; i < dex->mon_count; i++) {
+        if (!saver_alive(&dex->mons[i]))
+            continue;
+        if (seen == nth)
+            return i;
+        seen++;
+    }
+    return -1;
+}
+
+static uint32_t saver_rnd(void)
+{
+    saver_rng ^= ((uint32_t)REG_VCOUNT + 1u) * 0x9E3779B9u;
+    saver_rng ^= saver_rng << 13;
+    saver_rng ^= saver_rng >> 17;
+    saver_rng ^= saver_rng << 5;
+    return saver_rng;
+}
+
+static int saver_pick(const Dex *dex)
+{
+    int n = saver_count(dex);
+    int choice;
+    int index;
+    if (n <= 0)
+        return -1;
+    choice = (int)(saver_rnd() % (uint32_t)n);
+    index = saver_nth(dex, choice);
+    if (n > 1 && index == saver_mon)
+        index = saver_nth(dex, (choice + 1) % n);
+    return index;
+}
+
+/* A slow rise and fall, about two seconds, a few pixels each way. */
+static int saver_dy(void)
+{
+    int t = saver_tick & 127;
+    int tri = t < 64 ? t : 128 - t;
+    return (tri * 10) / 64 - 5;
+}
+
+static void draw_saver(const Dex *dex)
+{
+    const MonRef *mon;
+    const SaveInfo *info;
+    char level[16];
+    int shiny;
+    int row;
+    if (saver_mon < 0 || saver_mon >= dex->mon_count)
+        return;
+    mon = &dex->mons[saver_mon];
+    info = save_of(dex, mon);
+    shiny = (mon->flags & MON_SHINY) != 0;
+
+    consoleSelect(&top_console);
+    consoleClear();
+    consoleSelect(&bottom_console);
+    consoleClear();
+    center_line(8, shiny ? INK_SHINY : INK_CREAM, species_name(mon->species));
+    snprintf(level, sizeof level, "Lv %u", mon->level);
+    center_line(10, INK_GOLD, level);
+    row = 12;
+    if (info && info->name[0]) {
+        center_line(row, INK_CREAM, info->name);
+        row++;
+    }
+    if (info && info->game[0])
+        center_line(row, INK_MUTED, info->game);
+    center_line(21, INK_MUTED, "Any button");
+    sprites_show_top(mon->species, shiny, 0, saver_dy());
+    sprites_flush();
+}
+
 static void draw(const Dex *dex)
 {
     int copies = 0;
+    sprites_hide_top();
     if (page != PAGE_DEX) {
         consoleSelect(&top_console);
         consoleClear();
@@ -2228,11 +2345,57 @@ void ui_run(Dex *dex)
         int dirty = 0;
         uint32_t down;
         uint32_t hit;
+        uint32_t held;
         swiWaitForVBlank();
+        if (saver_on && saver_mon >= 0 && saver_mon < dex->mon_count) {
+            const MonRef *mon = &dex->mons[saver_mon];
+            saver_tick++;
+            sprites_show_top(mon->species, (mon->flags & MON_SHINY) != 0, 0, saver_dy());
+        }
         sprites_flush();
         scanKeys();
         down = keysDownRepeat();
         hit = keysDown();
+        held = keysHeld();
+
+        if (saver_on) {
+            if (hit) {
+                saver_on = 0;
+                idle_frames = 0;
+                draw(dex);
+                sprites_flush();
+            } else if (++saver_hold >= SAVER_HOLD) {
+                int next = saver_pick(dex);
+                saver_hold = 0;
+                if (next < 0) {
+                    saver_on = 0;
+                    draw(dex);
+                    sprites_flush();
+                } else {
+                    saver_mon = next;
+                    draw_saver(dex);
+                }
+            }
+            music_pump();
+            continue;
+        }
+
+        if (held)
+            idle_frames = 0;
+        else if (idle_frames < SAVER_IDLE)
+            idle_frames++;
+        if (!held && idle_frames >= SAVER_IDLE) {
+            int next = saver_pick(dex);
+            if (next >= 0) {
+                saver_mon = next;
+                saver_on = 1;
+                saver_hold = 0;
+                saver_tick = 0;
+                draw_saver(dex);
+                music_pump();
+                continue;
+            }
+        }
 
         if (page == PAGE_HOME) {
             if (hit & KEY_A) {

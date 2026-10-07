@@ -3,6 +3,7 @@
 #include <maxmod9.h>
 #include <nds.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 /* 16-bit mono 22050 Hz PCM. Maxmod plays the stream; this file only feeds it.
@@ -246,6 +247,11 @@ void music_init(void)
 
 void music_pump(void)
 {
+    /* The lid request arrives on the ARM7 and is only acted on from here.
+       This runs on every frame and between card reads, so the screens and
+       the soundtrack stop together. A false return is the power button. */
+    if (!pmMainLoop())
+        exit(0);
     if (started)
         mmStreamUpdate();
 }

@@ -17,14 +17,19 @@ enum {
     /* Sits in the right-hand pocket, under the two header rows and
        clear of the one-tile frame. */
     MON_SPRITE_X = 184,
-    MON_SPRITE_Y = 24
+    MON_SPRITE_Y = 24,
+    /* Centered on the top screen for the idle screensaver. */
+    MON_TOP_X = (256 - 64) / 2,
+    MON_TOP_Y = (192 - 64) / 2
 };
 
 static u16 *gfx;
+static u16 *gfx_top;
 static FILE *bank;
 static int ready;
 static int failed;
 static int shown = -2;
+static int shown_top = -2;
 static uint32_t data_off;
 static uint8_t flags[MON_SPRITES + 1];
 static uint8_t image[MON_SPRITE_BYTES] __attribute__((aligned(32)));
@@ -49,6 +54,16 @@ static void place(int hide)
            gfx, -1, false, hide, false, false, false);
 }
 
+static void place_top(int dy, int hide)
+{
+    int y = MON_TOP_Y + dy;
+    if (y < 0)
+        y = 0;
+    oamSet(&oamMain, 0, MON_TOP_X, y, 0, 0,
+           SpriteSize_64x64, SpriteColorFormat_256Color,
+           gfx_top, -1, false, hide, false, false, false);
+}
+
 void sprites_init(void)
 {
     vramSetBankD(VRAM_D_SUB_SPRITE);
@@ -56,12 +71,26 @@ void sprites_init(void)
     gfx = oamAllocateGfx(&oamSub, SpriteSize_64x64, SpriteColorFormat_256Color);
     if (gfx)
         place(true);
+
+    vramSetBankE(VRAM_E_MAIN_SPRITE);
+    oamInit(&oamMain, SpriteMapping_1D_128, false);
+    gfx_top = oamAllocateGfx(&oamMain, SpriteSize_64x64, SpriteColorFormat_256Color);
+    if (gfx_top)
+        place_top(0, true);
 }
 
 void sprites_flush(void)
 {
     if (gfx)
         oamUpdate(&oamSub);
+    if (gfx_top)
+        oamUpdate(&oamMain);
+}
+
+void sprites_hide_top(void)
+{
+    if (gfx_top)
+        place_top(0, true);
 }
 
 void sprites_hide(void)
@@ -69,6 +98,7 @@ void sprites_hide(void)
     shown = -1;
     if (gfx)
         place(true);
+    sprites_hide_top();
 }
 
 static int ensure(void)
@@ -111,36 +141,41 @@ static int load_image(int index)
     return fread(image, 1, MON_SPRITE_BYTES, bank) == MON_SPRITE_BYTES;
 }
 
+static int image_index(unsigned species, int shiny, int egg)
+{
+    int use_shiny;
+
+    if (egg) {
+        if ((flags[0] & 1) == 0)
+            return -1;
+        return 0;
+    }
+    if (species < 1 || species > MON_SPRITES)
+        return -1;
+    use_shiny = shiny && (flags[species] & 2) != 0;
+    if (!use_shiny && (flags[species] & 1) == 0)
+        return -1;
+    return 1 + (int)(species - 1) * 2 + (use_shiny ? 1 : 0);
+}
+
 void sprites_show(unsigned species, int shiny, int egg)
 {
     int index;
-    int use_shiny;
 
+    sprites_hide_top();
     if (!ensure()) {
         sprites_hide();
         return;
     }
-
-    if (egg) {
-        if ((flags[0] & 1) == 0) {
-            sprites_hide();
-            return;
-        }
-        index = 0;
-    } else if (species < 1 || species > MON_SPRITES) {
+    index = image_index(species, shiny, egg);
+    if (index < 0) {
         sprites_hide();
         return;
-    } else {
-        use_shiny = shiny && (flags[species] & 2) != 0;
-        if (!use_shiny && (flags[species] & 1) == 0) {
-            sprites_hide();
-            return;
-        }
-        index = 1 + (int)(species - 1) * 2 + (use_shiny ? 1 : 0);
     }
-
-    if (index == shown)
+    if (index == shown) {
+        place(false);
         return;
+    }
     if (!load_image(index)) {
         sprites_hide();
         return;
@@ -150,4 +185,32 @@ void sprites_show(unsigned species, int shiny, int egg)
     dmaCopy(image + 512, gfx, 64 * 64);
     shown = index;
     place(false);
+}
+
+void sprites_show_top(unsigned species, int shiny, int egg, int dy)
+{
+    int index;
+
+    if (gfx)
+        place(true);
+    if (!gfx_top || !ensure()) {
+        sprites_hide_top();
+        return;
+    }
+    index = image_index(species, shiny, egg);
+    if (index < 0) {
+        sprites_hide_top();
+        return;
+    }
+    if (index != shown_top) {
+        if (!load_image(index)) {
+            sprites_hide_top();
+            return;
+        }
+        DC_FlushRange(image, MON_SPRITE_BYTES);
+        dmaCopy(image, SPRITE_PALETTE, 512);
+        dmaCopy(image + 512, gfx_top, 64 * 64);
+        shown_top = index;
+    }
+    place_top(dy, false);
 }
