@@ -175,6 +175,7 @@ $(QUIET_NDS): $(CURDIR)/$(TARGET).elf $(CURDIR)/nitro/sprites.bin $(GAME_ICON)
 	@rm -rf $(QUIET_NITRO)/music
 	@ln -sfn $(CURDIR)/nitro/sprites.bin $(QUIET_NITRO)/sprites.bin
 	@ndstool -c $(QUIET_NDS) -9 $(CURDIR)/$(TARGET).elf $(_ARM7_ELF) \
+		-h 0x200 \
 		-g PKVT PV "$(GAME_TITLE)" \
 		-b $(GAME_ICON) "$(GAME_TITLE);$(GAME_SUBTITLE1);No music" \
 		-d $(QUIET_NITRO)
@@ -191,8 +192,12 @@ else
 #---------------------------------------------------------------------------------
 # main targets
 #---------------------------------------------------------------------------------
+# ndstool's default header is DSi-enhanced. TWiLight then starts the ROM
+# through nds-bootstrap in DSi mode, which stops on "An error has occurred"
+# before main runs. 0x200 is a DS homebrew header, so the menu direct-boots it.
 $(OUTPUT).nds: $(OUTPUT).elf $(NITRO_FILES) $(GAME_ICON)
 	$(SILENTCMD)ndstool -c $@ -9 $< $(_ARM7_ELF) \
+		-h 0x200 \
 		-g PKVT PV "$(GAME_TITLE)" \
 		-b $(GAME_ICON) "$(GAME_TITLE);$(GAME_SUBTITLE1);$(GAME_SUBTITLE2)" $(_ADDFILES)
 	$(SILENTMSG) built ... $(notdir $@)
