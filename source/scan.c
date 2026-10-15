@@ -129,7 +129,17 @@ static void read_sav(Dex *dex, const char *path, uint8_t *buf, size_t cap, ScanP
     snprintf(msg, sizeof msg, "Reading %s", name);
     if (progress)
         progress(msg);
-    save_read(dex, name, buf, n);
+    {
+        int before = dex->save_count;
+        size_t path_len;
+        save_read(dex, name, buf, n);
+        if (dex->save_count != before + 1)
+            return;
+        path_len = strlen(path);
+        if (path_len == 0 || path_len >= sizeof dex->saves[before].path)
+            return;
+        memcpy(dex->saves[before].path, path, path_len + 1);
+    }
 }
 
 static void walk(Dex *dex, const char *path, int depth, uint8_t *buf, size_t cap, ScanProgress progress)

@@ -3,11 +3,12 @@ ui.o: /Users/lucacaspari/Development/pokevault/source/ui.c \
  /Users/lucacaspari/Development/pokevault/include/identity.h \
  /Users/lucacaspari/Development/pokevault/include/moves.h \
  /Users/lucacaspari/Development/pokevault/include/music.h \
+ /Users/lucacaspari/Development/pokevault/include/prefs.h \
+ /Users/lucacaspari/Development/pokevault/include/save.h \
  /Users/lucacaspari/Development/pokevault/include/save.h \
  /Users/lucacaspari/Development/pokevault/include/species.h \
  /Users/lucacaspari/Development/pokevault/include/sprites.h \
  /Users/lucacaspari/Development/pokevault/include/stats.h \
- /Users/lucacaspari/Development/pokevault/include/save.h \
  /Users/lucacaspari/Development/pokevault/include/types.h \
  /opt/devkitpro/libnds/include/nds.h \
  /opt/devkitpro/calico/include/calico.h \
@@ -127,11 +128,12 @@ ui.o: /Users/lucacaspari/Development/pokevault/source/ui.c \
 /Users/lucacaspari/Development/pokevault/include/identity.h:
 /Users/lucacaspari/Development/pokevault/include/moves.h:
 /Users/lucacaspari/Development/pokevault/include/music.h:
+/Users/lucacaspari/Development/pokevault/include/prefs.h:
+/Users/lucacaspari/Development/pokevault/include/save.h:
 /Users/lucacaspari/Development/pokevault/include/save.h:
 /Users/lucacaspari/Development/pokevault/include/species.h:
 /Users/lucacaspari/Development/pokevault/include/sprites.h:
 /Users/lucacaspari/Development/pokevault/include/stats.h:
-/Users/lucacaspari/Development/pokevault/include/save.h:
 /Users/lucacaspari/Development/pokevault/include/types.h:
 /opt/devkitpro/libnds/include/nds.h:
 /opt/devkitpro/calico/include/calico.h:

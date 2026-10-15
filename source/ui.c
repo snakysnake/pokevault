@@ -2,6 +2,7 @@
 #include "identity.h"
 #include "moves.h"
 #include "music.h"
+#include "prefs.h"
 #include "save.h"
 #include "species.h"
 #include "sprites.h"
@@ -98,6 +99,7 @@ static int filter_seen;
 static int filter_dex;
 static int filter_shiny;
 static int filter_version[MAX_SAVES];
+static Prefs card_prefs;
 static int filter_pane;
 static int filter_cursor;
 static int filter_scroll;
@@ -1842,6 +1844,8 @@ static void draw_filter_note(const Dex *dex)
         at(13, 0);
         use_ink(INK_MUTED);
         fputs("Off hides it in Games.", stdout);
+        at(14, 0);
+        fputs("Kept for next boot.", stdout);
         return;
     }
     if (filter_pane == PANE_MODE) {
@@ -2098,6 +2102,8 @@ static void hide_selected_game(const Dex *dex)
         keep = 1;
     }
     filter_version[saved] = 0;
+    prefs_capture(&card_prefs, dex, filter_version, dex->save_count);
+    prefs_commit(&card_prefs);
     game_cursor = nearest_visible_game(dex, saved);
     clamp_games(dex);
     apply_filter(dex);
@@ -2288,6 +2294,8 @@ static void draw_hide_confirm(const Dex *dex)
     at(13, 0);
     use_ink(INK_MUTED);
     fputs("Also hidden in the dex.", stdout);
+    at(14, 0);
+    fputs("Kept for next boot.", stdout);
     at(21, 0);
     fputs("A hide", stdout);
     at(21, COLS - 8);
@@ -3323,6 +3331,8 @@ void ui_run(Dex *dex)
     keysSetRepeat(16, 5);
     for (i = 0; i < MAX_SAVES; i++)
         filter_version[i] = 1;
+    prefs_load(&card_prefs);
+    prefs_apply(&card_prefs, dex, filter_version, dex->save_count);
     filter_caught = 0;
     filter_seen = 0;
     filter_dex = 0;
@@ -3575,8 +3585,11 @@ void ui_run(Dex *dex)
                     mode_cursor = dex_mode;
                     clamp_filter(dex);
                 } else if (filter_pane == PANE_GAMES) {
-                    if (game_filter_cursor >= 0 && game_filter_cursor < dex->save_count)
+                    if (game_filter_cursor >= 0 && game_filter_cursor < dex->save_count) {
                         filter_version[game_filter_cursor] = !filter_version[game_filter_cursor];
+                        prefs_capture(&card_prefs, dex, filter_version, dex->save_count);
+                        prefs_commit(&card_prefs);
+                    }
                 } else if (filter_pane == PANE_MODE) {
                     dex_mode = mode_cursor;
                 } else {

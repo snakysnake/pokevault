@@ -2,6 +2,7 @@
 #include "identity.h"
 #include "moves.h"
 #include "flavor.h"
+#include "prefs.h"
 #include "save.h"
 #include "species.h"
 #include "stats.h"
@@ -1141,6 +1142,110 @@ static void test_cards(Dex *dex)
     free(sav);
 }
 
+static int hidden_has(const Prefs *prefs, const char *path)
+{
+    int i;
+    for (i = 0; i < prefs->hidden_count; i++) {
+        if (strcmp(prefs->hidden[i].path, path) == 0)
+            return 1;
+    }
+    return 0;
+}
+
+static void test_prefs(Dex *dex)
+{
+    Prefs prefs;
+    Prefs again;
+    uint8_t buf[512];
+    uint8_t wide[512];
+    size_t n;
+    size_t records;
+    int shown[2];
+    const uint8_t future[] = { 9, 0, 3, 0, 'a', 'b', 'c' };
+
+    memset(&prefs, 0, sizeof prefs);
+    strcpy(prefs.hidden[0].path, "fat:/roms/gba/Ruby.sav");
+    prefs.hidden_count = 1;
+    memcpy(prefs.extra, future, sizeof future);
+    prefs.extra_len = (int)sizeof future;
+    n = prefs_encode(&prefs, buf, sizeof buf);
+    CHECK(n > 16);
+    CHECK(buf[0] == 'P' && buf[1] == 'V' && buf[2] == 'S' && buf[3] == 'T');
+    CHECK(pv_read16(buf + 4) == 1);
+    CHECK(pv_read16(buf + 6) == 8);
+    CHECK(pv_read16(buf + 12) == pv_crc16_ccitt(buf + 16, n - 16));
+    CHECK(prefs_decode(&again, buf, n));
+    CHECK(again.hidden_count == 1);
+    CHECK(strcmp(again.hidden[0].path, "fat:/roms/gba/Ruby.sav") == 0);
+    CHECK(again.extra_len == (int)sizeof future);
+    CHECK(memcmp(again.extra, future, sizeof future) == 0);
+
+    records = n - 16;
+    memcpy(wide, buf, 16);
+    pv_write16(wide + 6, 12);
+    memset(wide + 16, 0x5A, 4);
+    memcpy(wide + 20, buf + 16, records);
+    pv_write16(wide + 12, pv_crc16_ccitt(wide + 20, records));
+    CHECK(prefs_decode(&again, wide, 20 + records));
+    CHECK(again.hidden_count == 1);
+    CHECK(again.extra_len == (int)sizeof future);
+
+    buf[12] ^= 0xFF;
+    CHECK(!prefs_decode(&again, buf, n));
+    CHECK(again.hidden_count == 0);
+    buf[12] ^= 0xFF;
+    pv_write16(buf + 4, 2);
+    CHECK(!prefs_decode(&again, buf, n));
+    buf[0] = 'X';
+    pv_write16(buf + 4, 1);
+    CHECK(!prefs_decode(&again, buf, n));
+    buf[0] = 'P';
+    CHECK(!prefs_decode(&again, buf, n - 1));
+
+    dex_clear(dex);
+    dex->save_count = 2;
+    strcpy(dex->saves[0].path, "fat:/roms/gba/Ruby.sav");
+    strcpy(dex->saves[1].path, "fat:/roms/nds/saves/White.sav");
+    CHECK(prefs_decode(&prefs, wide, 20 + records));
+    strcpy(prefs.hidden[1].path, "fat:/old/Emerald.sav");
+    prefs.hidden_count = 2;
+    shown[0] = 1;
+    shown[1] = 0;
+    prefs_capture(&prefs, dex, shown, 2);
+    CHECK(prefs.hidden_count == 2);
+    CHECK(hidden_has(&prefs, "fat:/roms/nds/saves/White.sav"));
+    CHECK(hidden_has(&prefs, "fat:/old/Emerald.sav"));
+    CHECK(!hidden_has(&prefs, "fat:/roms/gba/Ruby.sav"));
+    CHECK(prefs.extra_len == (int)sizeof future);
+
+    shown[0] = 1;
+    shown[1] = 1;
+    prefs_apply(&prefs, dex, shown, 2);
+    CHECK(shown[0] == 1);
+    CHECK(shown[1] == 0);
+
+    strcpy(prefs.hidden[0].path, "FAT:/ROMS/NDS/SAVES/WHITE.SAV");
+    shown[0] = 1;
+    shown[1] = 1;
+    prefs_apply(&prefs, dex, shown, 2);
+    CHECK(shown[1] == 0);
+
+    dex->saves[1].path[0] = 0;
+    shown[0] = 0;
+    shown[1] = 0;
+    prefs_capture(&prefs, dex, shown, 2);
+    CHECK(hidden_has(&prefs, "fat:/roms/gba/Ruby.sav"));
+    CHECK(!hidden_has(&prefs, "fat:/roms/nds/saves/White.sav"));
+    CHECK(hidden_has(&prefs, "fat:/old/Emerald.sav"));
+
+    n = prefs_encode(&prefs, buf, sizeof buf);
+    CHECK(prefs_decode(&again, buf, n));
+    CHECK(again.extra_len == (int)sizeof future);
+    CHECK(memcmp(again.extra, future, sizeof future) == 0);
+    CHECK(hidden_has(&again, "fat:/roms/gba/Ruby.sav"));
+    CHECK(hidden_has(&again, "fat:/old/Emerald.sav"));
+}
+
 static void test_rejects_garbage(Dex *dex)
 {
     uint8_t junk[128];
@@ -1172,6 +1277,7 @@ int main(void)
     test_identity(&dex);
     test_japanese(&dex);
     test_cards(&dex);
+    test_prefs(&dex);
     test_rejects_garbage(&dex);
     if (fails) {
         printf("%d checks failed\n", fails);

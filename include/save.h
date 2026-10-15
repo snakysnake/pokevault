@@ -22,7 +22,9 @@ enum {
     MAX_SAVES = 48,
     NATIONAL_DEX = 649,
     /* One bit per species, species 1 in bit 0. */
-    DEX_BYTES = (NATIONAL_DEX + 7) / 8
+    DEX_BYTES = (NATIONAL_DEX + 7) / 8,
+    /* Path of the .sav on the card, including the drive prefix. */
+    SAVE_PATH_MAX = 192
 };
 
 /* ivs uses the save's bit layout: 5 bits each of HP, Attack, Defense, Speed,
@@ -70,6 +72,8 @@ typedef struct {
 
 typedef struct {
     char name[32];
+    /* Card path this save was read from. Empty for a save built in a test. */
+    char path[SAVE_PATH_MAX];
     /* In-game trainer name. Empty when the save did not have one. */
     char trainer[16];
     char game[8];

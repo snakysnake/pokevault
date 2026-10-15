@@ -8,7 +8,7 @@ Every save on the card, gathered into one National Dex.
 
 Boot it on a DS that already runs homebrew. PokeVault walks the SD card, reads the Pokémon saves it finds, and lays them out as a single Pokédex from Bulbasaur to Genesect. Generation 3, 4, and 5 share the list. Open a species and every copy you have is there: level, nature, moves, the ball it was caught in, and the game it came from. A shiny shows its shiny sprite.
 
-It only reads. It never writes to a save.
+Pokémon saves are left untouched. Which games are hidden is kept in PokeVault's own settings file, and that file can hold more choices later.
 
 An unofficial fan tool, not affiliated with Nintendo, Game Freak, or The Pokémon Company.
 
@@ -81,7 +81,7 @@ It keeps up to 48 saves and 16,384 Pokémon. Past that, the list says it is full
 - Seen: marked seen in a Pokédex
 - In Dex: marked caught in a Pokédex
 - Shiny: a shiny copy is stored
-- Games: turn individual saves on or off. Off also hides that save from the Games list
+- Games: turn individual saves on or off. Off also hides that save from the Games list, and the choice is kept on the card
 - Pokédex: the full National Dex, or only Kanto, Johto, Hoenn, Sinnoh, or Unova
 
 A toggles a row. On Games or Pokédex, A opens that list. B goes back, and from the top of the filter it closes it.
@@ -96,7 +96,7 @@ A toggles a row. On Games or Pokédex, A opens that list. B goes back, and from 
 **Games**
 
 - Up and Down scroll the save list. A save set to Off in the filter is left out
-- Y asks to hide the save you are on. A hides it, and B cancels. That is the same switch as Filter, Games, Off
+- Y asks to hide the save you are on. A hides it, and B cancels. That is the same switch as Filter, Games, Off, and it is still hidden next boot
 - Turn a hidden save back on from the Pokédex filter, under Games
 - A opens that save's party and boxes
 - In the boxes, the D-pad moves between slots, L and R change box, and A opens that Pokémon
@@ -115,7 +115,7 @@ A toggles a row. On Games or Pokédex, A opens that list. B goes back, and from 
 
 It runs on a DS that already boots homebrew. That includes TWiLight Menu++ on a DSi or 3DS, and a DS or DS Lite with a flashcart running TWiLight Menu or its own kernel. Copy `pokevault.nds` onto the same SD card the menu uses, usually into `roms/nds`, and launch it from the menu like any other homebrew.
 
-The saves can stay where TWiLight already put them. DS saves sit next to the ROM or in `roms/nds/saves`. GBA saves, from GBARunner, sit in `roms/gba`. PokeVault walks the card and reads those `.sav` files in place. It skips TWiLight's own `_nds` folder, and also skips `hiya`, `gm9`, `dcim`, and `private`, so the menu's files are left alone. The card is only read.
+The saves can stay where TWiLight already put them. DS saves sit next to the ROM or in `roms/nds/saves`. GBA saves, from GBARunner, sit in `roms/gba`. PokeVault walks the card and reads those `.sav` files in place. It skips TWiLight's own `_nds` folder, and also skips `hiya`, `gm9`, `dcim`, and `private`, so the menu's files are left alone. Pokémon saves are only read. The hidden-game choice is written to `_nds/pokevault/settings`.
 
 Sprites and music are packed inside `pokevault.nds`. The Pokémon data comes from the SD card. TWiLight Menu tells the homebrew where that `.nds` file is, which is what those packed files need. The dex still opens if a loader omits that path. The sprites and music are just blank.
 
