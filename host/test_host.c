@@ -791,15 +791,6 @@ static void test_tidy_name(void)
     CHECK(strcmp(name, "Version Saphir") == 0);
 }
 
-static void put_utf16(uint8_t *p, const char *text)
-{
-    int i = 0;
-    while (text[i] && i < 10) {
-        p[i * 2] = (uint8_t)text[i];
-        p[i * 2 + 1] = 0;
-        i++;
-    }
-}
 
 static void test_identity(Dex *dex)
 {
@@ -828,8 +819,15 @@ static void test_identity(Dex *dex)
     party[0x19] = 4;
     pv_write16(party + 0x0A, 234);
     pv_write16(party + 0x46, 48);
-    pv_write32(party + 0x38, 31u | (31u << 5));
-    put_utf16(party + 0x48, "Sparky");
+    /* Sparky in the Generation 4 character table, and the nicknamed bit. */
+    pv_write32(party + 0x38, 31u | (31u << 5) | (1u << 31));
+    pv_write16(party + 0x48, 0x13D);
+    pv_write16(party + 0x4A, 0x154);
+    pv_write16(party + 0x4C, 0x145);
+    pv_write16(party + 0x4E, 0x156);
+    pv_write16(party + 0x50, 0x14F);
+    pv_write16(party + 0x52, 0x15D);
+    pv_write16(party + 0x54, 0xFFFF);
     pv_refresh_checksum45(party);
     pv_encrypt45(party, 236);
     sav[0x9C] = 1;
@@ -908,12 +906,21 @@ static void test_japanese(Dex *dex)
     mark_gen4(sav, 0xC100, 0xC100, 0x121E0);
     fill_pk45(party4, 236, 1, 133, 800000, 7, 7, 0, 36);
     CHECK(pv_decrypt45(party4, 236));
-    put_utf16_units(party4 + 0x48, satoshi, 3);
+    /* ピカチュウ, with the nicknamed bit. Generation 4 stores table indexes. */
+    {
+        const uint16_t pika[] = {0x085, 0x05C, 0x072, 0x096, 0x057};
+        put_utf16_units(party4 + 0x48, pika, 5);
+    }
+    pv_write32(party4 + 0x38, pv_read32(party4 + 0x38) | (1u << 31));
     pv_refresh_checksum45(party4);
     pv_encrypt45(party4, 236);
     sav[0x94] = 1;
     memcpy(sav + 0x98, party4, sizeof party4);
-    put_utf16_units(sav + 0x64, satoshi, 3);
+    /* サトシ */
+    {
+        const uint16_t ot[] = {0x066, 0x079, 0x068};
+        put_utf16_units(sav + 0x64, ot, 3);
+    }
     pv_write32(sav + 0x64 + 0x14, 9999);
     pv_write16(sav + 0x64 + 0x22, 4);
     sav[0x64 + 0x24] = 5;
@@ -923,8 +930,19 @@ static void test_japanese(Dex *dex)
     CHECK(dex->mon_count == 1);
     CHECK(strcmp(dex->saves[0].game, "D/P") == 0);
     CHECK(dex->mons[0].species == 133 && dex->mons[0].level == 36);
+    CHECK(strcmp(dex->mons[0].nick, "pikachuu") == 0);
+    CHECK(strcmp(dex->saves[0].trainer, "satoshi") == 0);
     CHECK(dex->saves[0].money == 9999);
     CHECK(dex->saves[0].hours == 4 && dex->saves[0].minutes == 5 && dex->saves[0].seconds == 6);
+    /* The same spelling without the nicknamed bit is the species name. */
+    CHECK(pv_decrypt45(party4, 236));
+    pv_write32(party4 + 0x38, pv_read32(party4 + 0x38) & ~(1u << 31));
+    pv_refresh_checksum45(party4);
+    pv_encrypt45(party4, 236);
+    memcpy(sav + 0x98, party4, sizeof party4);
+    dex_clear(dex);
+    CHECK(save_read(dex, "Diamond", sav, 0x80000));
+    CHECK(dex->mons[0].species == 133 && dex->mons[0].nick[0] == 0);
     free(sav);
 
     sav = calloc(1, 0x80000);

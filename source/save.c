@@ -495,13 +495,206 @@ static void decode_utf16_name(const uint8_t *src, int bytes, char *out, int cap)
     out[w] = 0;
 }
 
+/* Generation 4 names are indexes into a character table, not Unicode.
+   Halfwidth Latin sits at 0x121. Kana is 0x02..0xA1, hiragana then katakana. */
+static char g4_latin(unsigned u)
+{
+    unsigned uni;
+    if (u >= 0x121 && u <= 0x12A)
+        return (char)('0' + (u - 0x121));
+    if (u >= 0x12B && u <= 0x144)
+        return (char)('A' + (u - 0x12B));
+    if (u >= 0x145 && u <= 0x15E)
+        return (char)('a' + (u - 0x145));
+    if (u >= 0x0A2 && u <= 0x0AB)
+        return (char)('0' + (u - 0x0A2));
+    if (u >= 0x0AC && u <= 0x0C5)
+        return (char)('A' + (u - 0x0AC));
+    if (u >= 0x0C6 && u <= 0x0DF)
+        return (char)('a' + (u - 0x0C6));
+    /* Latin-1 from À, with the two symbol holes the table leaves in that run. */
+    if (u >= 0x15F && u <= 0x19E && u != 0x176 && u != 0x196) {
+        uni = 0xC0u + (u - 0x15F);
+        if (fold_latin((uint16_t)uni))
+            return fold_latin((uint16_t)uni);
+        switch (uni) {
+        case 0xC6: return 'A';
+        case 0xE6: return 'a';
+        case 0xD0: return 'D';
+        case 0xF0: return 'd';
+        case 0xD1: return 'N';
+        case 0xF1: return 'n';
+        case 0xD8: return 'O';
+        case 0xF8: return 'o';
+        case 0xDE: return 'T';
+        case 0xFE: return 't';
+        case 0xDD: return 'Y';
+        case 0xFD: case 0xFF: return 'y';
+        default: return 0;
+        }
+    }
+    switch (u) {
+    case 0x001: case 0x1DE: return ' ';
+    case 0x0E1: case 0x1AB: return '!';
+    case 0x0E2: case 0x1AC: return '?';
+    case 0x0F8: case 0x1AE: return '.';
+    case 0x0F9: case 0x1AD: return ',';
+    case 0x0E7: case 0x1B1: return '/';
+    case 0x1B2: case 0x1B3: return '\'';
+    case 0x0F0: case 0x1BD: return '+';
+    case 0x1BE: return '-';
+    case 0x1BF: return '*';
+    case 0x1B9: return '(';
+    case 0x1BA: return ')';
+    case 0x1C1: return '=';
+    case 0x120: case 0x1C2: return '&';
+    case 0x1C3: return '~';
+    case 0x0F6: case 0x1C4: return ':';
+    case 0x0F7: case 0x1C5: return ';';
+    case 0x104: case 0x1D0: return '@';
+    case 0x106: case 0x1D2: return '%';
+    case 0x1E9: return '_';
+    case 0x19F: return 'O';
+    case 0x1A0: return 'o';
+    case 0x1A1: return 'S';
+    case 0x1A2: return 's';
+    default: return 0;
+    }
+}
+
+/* Hiragana code 0x02..0x51. Katakana is the same table plus 0x50. */
+static const char *g4_hira(unsigned h)
+{
+    static const char *const name[] = {
+        "a", "a", "i", "i", "u", "u", "e", "e", "o", "o",
+        "ka", "ga", "ki", "gi", "ku", "gu", "ke", "ge", "ko", "go",
+        "sa", "za", "shi", "ji", "su", "zu", "se", "ze", "so", "zo",
+        "ta", "da", "chi", "ji", "", "tsu", "zu", "te", "de", "to", "do",
+        "na", "ni", "nu", "ne", "no",
+        "ha", "ba", "pa", "hi", "bi", "pi", "fu", "bu", "pu", "he", "be", "pe", "ho", "bo", "po",
+        "ma", "mi", "mu", "me", "mo",
+        "ya", "ya", "yu", "yu", "yo", "yo",
+        "ra", "ri", "ru", "re", "ro", "wa", "o", "n"
+    };
+    if (h < 0x02 || h > 0x51)
+        return NULL;
+    return name[h - 0x02];
+}
+
+static int g4_cons(char c)
+{
+    if (c >= 'A' && c <= 'Z')
+        c = (char)(c - 'A' + 'a');
+    return c >= 'b' && c <= 'z' && c != 'e' && c != 'i' && c != 'o' && c != 'u';
+}
+
+static int g4_vowel(char c)
+{
+    if (c >= 'A' && c <= 'Z')
+        c = (char)(c - 'A' + 'a');
+    return c == 'a' || c == 'e' || c == 'i' || c == 'o' || c == 'u';
+}
+
+static void g4_put(char *out, int cap, int *w, const char *s)
+{
+    while (s && *s && *w + 1 < cap)
+        out[(*w)++] = *s++;
+}
+
+/* ゃゅょ and the small vowels edit the syllable just written. */
+static void g4_youon(char *out, int cap, int *w, char vowel)
+{
+    if (*w >= 1 && out[*w - 1] == 'i') {
+        if (*w >= 2 && (out[*w - 2] == 'h' || out[*w - 2] == 'j'))
+            out[*w - 1] = vowel;
+        else if (*w + 1 < cap) {
+            out[*w - 1] = 'y';
+            out[(*w)++] = vowel;
+        }
+        return;
+    }
+    if (*w + 2 < cap) {
+        out[(*w)++] = 'y';
+        out[(*w)++] = vowel;
+    }
+}
+
+static void g4_small_vowel(char *out, int cap, int *w, char vowel)
+{
+    int i;
+    for (i = *w; i > 0; i--) {
+        if (g4_vowel(out[i - 1])) {
+            out[i - 1] = vowel;
+            return;
+        }
+    }
+    if (*w + 1 < cap)
+        out[(*w)++] = vowel;
+}
+
+static void decode_g4_name(const uint8_t *src, int bytes, char *out, int cap)
+{
+    int i = 0;
+    int w = 0;
+    int soku = 0;
+    if (cap <= 0)
+        return;
+    while (i + 1 < bytes && w + 1 < cap) {
+        unsigned u = (unsigned)src[i] | ((unsigned)src[i + 1] << 8);
+        unsigned h;
+        char latin;
+        const char *syl;
+        i += 2;
+        if (u == 0 || u == 0xFFFF)
+            break;
+        latin = g4_latin(u);
+        if (latin) {
+            soku = 0;
+            out[w++] = latin;
+            continue;
+        }
+        if (u == 0x0F1) {
+            if (w > 0 && g4_vowel(out[w - 1]) && w + 1 < cap) {
+                out[w] = out[w - 1];
+                w++;
+            }
+            continue;
+        }
+        h = u;
+        if (h >= 0x052 && h <= 0x0A1)
+            h -= 0x50;
+        if (h == 0x24) {
+            soku = 1;
+            continue;
+        }
+        if (h == 0x44 || h == 0x46 || h == 0x48) {
+            g4_youon(out, cap, &w, h == 0x44 ? 'a' : h == 0x46 ? 'u' : 'o');
+            continue;
+        }
+        if (h == 0x02 || h == 0x04 || h == 0x06 || h == 0x08 || h == 0x0A) {
+            g4_small_vowel(out, cap, &w, h == 0x02 ? 'a' : h == 0x04 ? 'i' : h == 0x06 ? 'u' : h == 0x08 ? 'e' : 'o');
+            continue;
+        }
+        syl = g4_hira(h);
+        if (!syl || !syl[0])
+            continue;
+        if (soku && g4_cons(syl[0]) && w + 1 < cap)
+            out[w++] = syl[0];
+        soku = 0;
+        g4_put(out, cap, &w, syl);
+    }
+    while (w > 0 && out[w - 1] == ' ')
+        w--;
+    out[w] = 0;
+}
+
 /* Trainer block: name, then id, money at +0x14, play time at +0x22. */
 static void read_profile4(SaveInfo *info, const uint8_t *general, int general_size, int trainer)
 {
     char name[16];
     if (!general || trainer < 0 || trainer + 0x26 > general_size)
         return;
-    decode_utf16_name(general + trainer, 16, name, (int)sizeof name);
+    decode_g4_name(general + trainer, 16, name, (int)sizeof name);
     set_profile(info, name, pv_read32(general + trainer + 0x14),
                 pv_read16(general + trainer + 0x22),
                 general[trainer + 0x24], general[trainer + 0x25]);
@@ -727,7 +920,7 @@ static uint8_t level_of(uint32_t exp, uint16_t species, int party_level)
 }
 
 static void consider45(Dex *dex, int save_index, const uint8_t *raw, int len,
-                       int party, uint16_t max_species, uint8_t box, uint8_t slot)
+                       int party, int gen5, uint16_t max_species, uint8_t box, uint8_t slot)
 {
     uint8_t tmp[236];
     uint16_t species;
@@ -782,7 +975,14 @@ static void consider45(Dex *dex, int save_index, const uint8_t *raw, int len,
     gender = (uint8_t)((tmp[0x40] >> 1) & 3u);
     if (gender > GENDER_NONE)
         gender = GENDER_NONE;
-    decode_utf16_name(tmp + 0x48, 22, nick, (int)sizeof nick);
+    /* Generation 5 stores Unicode. Generation 4 stores table indexes.
+       Bit 31 is the nicknamed flag, so a default species name stays blank. */
+    if (gen5)
+        decode_utf16_name(tmp + 0x48, 22, nick, (int)sizeof nick);
+    else
+        decode_g4_name(tmp + 0x48, 22, nick, (int)sizeof nick);
+    if (((ivs >> 31) & 1u) == 0)
+        nick[0] = 0;
     memset(&caught, 0, sizeof caught);
     caught.moves = moves;
     caught.evs = evs;
@@ -975,14 +1175,14 @@ static void read_gen4(Dex *dex, const char *name, const uint8_t *data, size_t le
     if (count > 6)
         count = 6;
     for (slot = 0; slot < count; slot++) {
-        consider45(dex, save_index, general + party + slot * 236, 236, 1,
+        consider45(dex, save_index, general + party + slot * 236, 236, 1, 0,
                    max_species, 0xFF, (uint8_t)slot);
     }
 
     for (box = 0; box < box_count; box++) {
         for (slot = 0; slot < 30; slot++) {
             const uint8_t *pk = storage + box_start + box * box_stride + slot * 136;
-            consider45(dex, save_index, pk, 136, 0, max_species, (uint8_t)box, (uint8_t)slot);
+            consider45(dex, save_index, pk, 136, 0, 0, max_species, (uint8_t)box, (uint8_t)slot);
         }
     }
     /* u32 magic, then caught flags, then seen flags. Each region is 0x40 bytes. */
@@ -1051,13 +1251,13 @@ static void read_gen5(Dex *dex, const char *name, const uint8_t *data, int base,
         count = 6;
     for (slot = 0; slot < count; slot++) {
         const uint8_t *pk = sav + 0x18E08 + slot * 220;
-        consider45(dex, save_index, pk, 220, 1, max_species, 0xFF, (uint8_t)slot);
+        consider45(dex, save_index, pk, 220, 1, 1, max_species, 0xFF, (uint8_t)slot);
     }
 
     for (box = 0; box < 24; box++) {
         for (slot = 0; slot < 30; slot++) {
             const uint8_t *pk = sav + 0x400 + box * 0x1000 + slot * 136;
-            consider45(dex, save_index, pk, 136, 0, max_species, (uint8_t)box, (uint8_t)slot);
+            consider45(dex, save_index, pk, 136, 0, 1, max_species, (uint8_t)box, (uint8_t)slot);
         }
     }
     /* Caught at +0x08. Four seen regions (male, female, and both shiny) follow. */
