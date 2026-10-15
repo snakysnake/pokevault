@@ -850,6 +850,104 @@ static void test_identity(Dex *dex)
     free(sav);
 }
 
+/* Writes a UTF-16 codepoint sequence, terminated with FFFF. */
+static void put_utf16_units(uint8_t *p, const uint16_t *units, int n)
+{
+    int i;
+    for (i = 0; i < n; i++)
+        pv_write16(p + i * 2, units[i]);
+    pv_write16(p + n * 2, 0xFFFF);
+}
+
+/* Japanese Ruby, Diamond, and Black. The cartridge layout matches the
+   international one: katakana in the trainer name must not shift the party,
+   the money, or the play time, and it must not make the save unreadable. */
+static void test_japanese(Dex *dex)
+{
+    uint8_t *sav;
+    uint8_t party3[100];
+    uint8_t party4[236];
+    uint8_t party5[220];
+    const uint16_t satoshi[] = {0x30B5, 0x30C8, 0x30B7};
+    int i;
+
+    sav = calloc(1, 0x20000);
+    CHECK(sav != NULL);
+    fill_pk3(party3, 100, 0x11111111u, 25, 1000, 1, 1, 12);
+    /* サトシ in the Japanese Generation 3 charset, then the terminator.
+       The two alignment bytes after a 5-character name stay zero. */
+    sav[0x00] = 0x5B;
+    sav[0x01] = 0x5C;
+    sav[0x02] = 0x64;
+    sav[0x03] = 0xFF;
+    pv_write16(sav + 0x0E, 12);
+    sav[0x10] = 34;
+    sav[0x11] = 56;
+    pv_write32(sav + 0x1000 + 0x490, 12345);
+    sav[0x1000 + 0x234] = 1;
+    memcpy(sav + 0x1000 + 0x238, party3, sizeof party3);
+    set_save_bit(sav + 0x28, 25);
+    for (i = 0; i < 14; i++) {
+        pv_write16(sav + i * 0x1000 + 0xFF4, (uint16_t)i);
+        pv_write32(sav + i * 0x1000 + 0xFFC, 5);
+        pv_write16(sav + i * 0x1000 + 0xFF6, pv_checksum32(sav + i * 0x1000, 0xF80));
+    }
+    dex_clear(dex);
+    CHECK(save_read(dex, "Ruby", sav, 0x20000));
+    CHECK(dex->mon_count == 1);
+    CHECK(strcmp(dex->saves[0].game, "R/S") == 0);
+    CHECK(dex->mons[0].species == 25 && dex->mons[0].level == 12);
+    CHECK(dex->mons[0].flags & MON_PARTY);
+    CHECK(dex->saves[0].money == 12345);
+    CHECK(dex->saves[0].hours == 12 && dex->saves[0].minutes == 34 && dex->saves[0].seconds == 56);
+    CHECK(save_bit(dex->saves[0].dex_caught, 25));
+    free(sav);
+
+    sav = calloc(1, 0x80000);
+    CHECK(sav != NULL);
+    mark_gen4(sav, 0xC100, 0xC100, 0x121E0);
+    fill_pk45(party4, 236, 1, 133, 800000, 7, 7, 0, 36);
+    CHECK(pv_decrypt45(party4, 236));
+    put_utf16_units(party4 + 0x48, satoshi, 3);
+    pv_refresh_checksum45(party4);
+    pv_encrypt45(party4, 236);
+    sav[0x94] = 1;
+    memcpy(sav + 0x98, party4, sizeof party4);
+    put_utf16_units(sav + 0x64, satoshi, 3);
+    pv_write32(sav + 0x64 + 0x14, 9999);
+    pv_write16(sav + 0x64 + 0x22, 4);
+    sav[0x64 + 0x24] = 5;
+    sav[0x64 + 0x25] = 6;
+    dex_clear(dex);
+    CHECK(save_read(dex, "Diamond", sav, 0x80000));
+    CHECK(dex->mon_count == 1);
+    CHECK(strcmp(dex->saves[0].game, "D/P") == 0);
+    CHECK(dex->mons[0].species == 133 && dex->mons[0].level == 36);
+    CHECK(dex->saves[0].money == 9999);
+    CHECK(dex->saves[0].hours == 4 && dex->saves[0].minutes == 5 && dex->saves[0].seconds == 6);
+    free(sav);
+
+    sav = calloc(1, 0x80000);
+    CHECK(sav != NULL);
+    fill_pk45(party5, 220, 11, 494, 1250000, 3, 3, 0, 70);
+    sav[0x18E04] = 1;
+    memcpy(sav + 0x18E08, party5, sizeof party5);
+    put_utf16_units(sav + 0x19404, satoshi, 3);
+    pv_write32(sav + 0x21200, 500);
+    pv_write16(sav + 0x19404 + 0x20, 8);
+    sav[0x19404 + 0x22] = 9;
+    sav[0x19404 + 0x23] = 10;
+    seal_gen5(sav, 0x24000, 0x8C, 0x23F34, 2);
+    dex_clear(dex);
+    CHECK(save_read(dex, "Black", sav, 0x80000));
+    CHECK(dex->mon_count == 1);
+    CHECK(strcmp(dex->saves[0].game, "B/W") == 0);
+    CHECK(dex->mons[0].species == 494 && dex->mons[0].level == 70);
+    CHECK(dex->saves[0].money == 500);
+    CHECK(dex->saves[0].hours == 8 && dex->saves[0].minutes == 9 && dex->saves[0].seconds == 10);
+    free(sav);
+}
+
 static void test_rejects_garbage(Dex *dex)
 {
     uint8_t junk[128];
@@ -879,6 +977,7 @@ int main(void)
     test_types();
     test_tidy_name();
     test_identity(&dex);
+    test_japanese(&dex);
     test_rejects_garbage(&dex);
     if (fails) {
         printf("%d checks failed\n", fails);
