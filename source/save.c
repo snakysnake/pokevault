@@ -688,8 +688,270 @@ static void decode_g4_name(const uint8_t *src, int bytes, char *out, int cap)
     out[w] = 0;
 }
 
-/* Trainer block: name, then id, money at +0x14, play time at +0x22. */
-static void read_profile4(SaveInfo *info, const uint8_t *general, int general_size, int trainer)
+static int bit_count(unsigned value, int width)
+{
+    int n = 0;
+    int i;
+    for (i = 0; i < width; i++)
+        n += (int)((value >> i) & 1u);
+    return n;
+}
+
+static void note_badges(SaveInfo *info, int count, int slots)
+{
+    if (!info)
+        return;
+    if (count < 0)
+        count = 0;
+    if (count > slots)
+        count = slots;
+    info->badges = (uint8_t)count;
+    info->badge_slots = (uint8_t)slots;
+}
+
+static void set_badges(SaveInfo *info, unsigned bits, int width, int slots)
+{
+    note_badges(info, bit_count(bits, width), slots);
+}
+
+static void set_stars(SaveInfo *info, int stars, int slots)
+{
+    if (!info)
+        return;
+    if (stars < 0)
+        stars = 0;
+    if (stars > slots)
+        stars = slots;
+    info->stars = (uint8_t)stars;
+    info->star_slots = (uint8_t)slots;
+}
+
+static int caught_at(const uint8_t *bits, int species)
+{
+    int bit;
+    if (!bits || species < 1 || species > NATIONAL_DEX)
+        return 0;
+    bit = species - 1;
+    return (bits[bit >> 3] >> (bit & 7)) & 1;
+}
+
+static int caught_range(const uint8_t *bits, int first, int last, const uint16_t *skip, int skip_n)
+{
+    int species;
+    int i;
+    for (species = first; species <= last; species++) {
+        int drop = 0;
+        for (i = 0; i < skip_n; i++) {
+            if (skip[i] == (uint16_t)species) {
+                drop = 1;
+                break;
+            }
+        }
+        if (drop)
+            continue;
+        if (!caught_at(bits, species))
+            return 0;
+    }
+    return 1;
+}
+
+static int flag_on(const uint8_t *block, int len, int base, int flag)
+{
+    int ofs = base + (flag >> 3);
+    if (!block || ofs < 0 || ofs >= len)
+        return 0;
+    return (block[ofs] >> (flag & 7)) & 1;
+}
+
+static int flags_on(const uint8_t *block, int len, int base, int first, int count)
+{
+    int i;
+    for (i = 0; i < count; i++) {
+        if (!flag_on(block, len, base, first + i))
+            return 0;
+    }
+    return 1;
+}
+
+static int flag_total(const uint8_t *block, int len, int base, int first, int count)
+{
+    int i;
+    int n = 0;
+    for (i = 0; i < count; i++)
+        n += flag_on(block, len, base, first + i);
+    return n;
+}
+
+static uint32_t stat_at(const uint8_t *block, int len, int ofs, int index, uint32_t key)
+{
+    int at = ofs + index * 4;
+    if (!block || at < 0 || at + 4 > len)
+        return 0;
+    return pv_read32(block + at) ^ key;
+}
+
+/* Five museum slots. A painting counts once its species field is filled. */
+static int museum_count(const uint8_t *large, int len, int ofs)
+{
+    int i;
+    int n = 0;
+    for (i = 0; i < 5; i++) {
+        int at = ofs + i * 0x20 + 8;
+        if (!large || at < 0 || at + 2 > len)
+            return n;
+        if (pv_read16(large + at) != 0)
+            n++;
+    }
+    return n;
+}
+
+/* Hoenn Pokédex slots 1 through 200, as national-dex bits. Jirachi and
+   Deoxys are slots 201 and 202 and are not required for the star. */
+static const uint8_t hoenn_card[48] = {
+    0x00, 0x00, 0x00, 0x0F, 0xF0, 0x1F, 0x60, 0xC0,
+    0x8F, 0x0F, 0x9B, 0x01, 0x18, 0xF0, 0xF8, 0x41,
+    0x03, 0x00, 0x00, 0x00, 0x00, 0x2F, 0xE3, 0x00,
+    0x00, 0x06, 0x20, 0x26, 0xE4, 0x00, 0x00, 0xF8,
+    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF
+};
+
+static int hoenn_card_full(const uint8_t *caught)
+{
+    int i;
+    if (!caught)
+        return 0;
+    for (i = 0; i < 48; i++) {
+        if ((caught[i] & hoenn_card[i]) != hoenn_card[i])
+            return 0;
+    }
+    return 1;
+}
+
+/* Mew, Lugia, Ho-Oh, Celebi, Jirachi, and Deoxys. */
+static const uint16_t mythic_g3[] = { 151, 249, 250, 251, 385, 386 };
+
+static int u16_count(int bytes)
+{
+    return bytes / (int)sizeof(uint16_t);
+}
+
+/* Hall of Fame time is hours, minutes, and seconds packed into one stat.
+   Ruby, Sapphire, and FireRed/LeafGreen award the star only when that time
+   is nonzero. Emerald awards it for entering the Hall of Fame at all. */
+static int hof_star(const uint8_t *large, int len, int record, uint32_t key, int need_time)
+{
+    uint32_t entered = stat_at(large, len, record, 10, key);
+    uint32_t debut = stat_at(large, len, record, 1, key);
+    if (!entered)
+        return 0;
+    if (need_time && debut == 0)
+        return 0;
+    return 1;
+}
+
+static int stars3(const SaveInfo *info, const uint8_t *small, const uint8_t *large, const char *game)
+{
+    int stars = 0;
+    int large_len = 4 * 0xF80;
+    uint32_t key = 0;
+    if (!info || !small || !large || !game)
+        return 0;
+    if (strcmp(game, "FR/LG") == 0) {
+        key = pv_read32(small + 0xF20);
+        stars += hof_star(large, large_len, 0x1200, key, 1);
+        stars += caught_range(info->dex_caught, 1, 150, NULL, 0);
+        stars += caught_range(info->dex_caught, 1, 386, mythic_g3, u16_count((int)sizeof mythic_g3));
+        /* Pokémon Jump "in a row" at 0xB00. Berries picked at 0xB14. */
+        if (pv_read16(small + 0xB00) >= 200 && pv_read16(small + 0xB14) >= 200)
+            stars++;
+        return stars;
+    }
+    if (strcmp(game, "E") == 0) {
+        key = pv_read32(small + 0xAC);
+        stars += hof_star(large, large_len, 0x159C, key, 0);
+        stars += hoenn_card_full(info->dex_caught);
+        stars += museum_count(large, large_len, 0x2F90) >= 5;
+        /* Silver and gold symbols, Tower through Pyramid, flags 0x8C4..0x8D1. */
+        stars += flags_on(large, large_len, 0x1270, 0x8C4, 14);
+        return stars;
+    }
+    stars += hof_star(large, large_len, 0x1540, 0, 1);
+    stars += hoenn_card_full(info->dex_caught);
+    /* Best Battle Tower streak. The card calls this field its loss count. */
+    if (pv_read16(small + 0x572) > 49)
+        stars++;
+    stars += museum_count(large, large_len, 0x2EFC) >= 5;
+    return stars;
+}
+
+/* Diamond, Pearl, and Platinum leave out Lugia and Ho-Oh as well. */
+static const uint16_t mythic_dppt[] = {
+    151, 249, 250, 251, 385, 386, 489, 490, 491, 492, 493
+};
+static const uint16_t mythic_hgss[] = {
+    151, 251, 385, 386, 489, 490, 491, 492, 493
+};
+static const uint16_t mythic_unova[] = {
+    151, 251, 385, 386, 489, 490, 491, 492, 493, 494, 647, 648, 649
+};
+
+/* Hall of Fame and the National Dex. The other three stars (contest or
+   Pokéathlon, Underground or Shiny Leaves, and the Battle Tower) live in
+   separate records, so this can stop short of the five on the card. */
+static int stars4(const SaveInfo *info, const uint8_t *general, int general_size, int trainer, int hgss)
+{
+    int stars = 0;
+    if (!info)
+        return 0;
+    if (general && trainer >= 0 && trainer + 0x1E <= general_size && (general[trainer + 0x1D] & 1))
+        stars++;
+    if (hgss)
+        stars += caught_range(info->dex_caught, 1, 493, mythic_hgss, u16_count((int)sizeof mythic_hgss));
+    else
+        stars += caught_range(info->dex_caught, 1, 493, mythic_dppt, u16_count((int)sizeof mythic_dppt));
+    return stars;
+}
+
+static int bits_full(const uint8_t *p, int len, int ofs, int nbits)
+{
+    int i;
+    if (!p || ofs < 0 || ofs + ((nbits + 7) >> 3) > len)
+        return 0;
+    for (i = 0; i < nbits; i++) {
+        if (((p[ofs + (i >> 3)] >> (i & 7)) & 1) == 0)
+            return 0;
+    }
+    return 1;
+}
+
+/* Black and White: Hall of Fame, National Dex, all 100 Musical props, and a
+   49-win record on both Super Single and Super Double. The Entralink Pass
+   Power star is not counted here. Black 2 and White 2: Hall of Fame, National
+   Dex, and both Entree levels at 30. Pokéstar Studios and the Champions
+   Tournament are not counted here. */
+static int stars5(const SaveInfo *info, const uint8_t *sav, int sav_len, int b2)
+{
+    int stars = 0;
+    if (!info || !sav)
+        return 0;
+    /* Adventure info: seconds to fame is one word at 0x1D93C. */
+    if (sav_len >= 0x1D940 && pv_read32(sav + 0x1D93C) != 0)
+        stars++;
+    stars += caught_range(info->dex_caught, 1, 649, mythic_unova, u16_count((int)sizeof mythic_unova));
+    if (!b2) {
+        stars += bits_full(sav, sav_len, 0x1F958, 100);
+        if (sav_len >= 0x21D28 && pv_read16(sav + 0x21D24) >= 49 && pv_read16(sav + 0x21D26) >= 49)
+            stars++;
+    } else if (sav_len >= 0x21210 && pv_read16(sav + 0x2120C) >= 30 && pv_read16(sav + 0x2120E) >= 30) {
+        stars++;
+    }
+    return stars;
+}
+
+/* Trainer block: name, then id, money at +0x14, badges at +0x1A, play time at +0x22.
+   HeartGold and SoulSilver keep the Kanto badges at +0x1F. */
+static void read_profile4(SaveInfo *info, const uint8_t *general, int general_size, int trainer, int kanto)
 {
     char name[16];
     if (!general || trainer < 0 || trainer + 0x26 > general_size)
@@ -698,6 +960,12 @@ static void read_profile4(SaveInfo *info, const uint8_t *general, int general_si
     set_profile(info, name, pv_read32(general + trainer + 0x14),
                 pv_read16(general + trainer + 0x22),
                 general[trainer + 0x24], general[trainer + 0x25]);
+    if (kanto) {
+        unsigned bits = (unsigned)general[trainer + 0x1A] | ((unsigned)general[trainer + 0x1F] << 8);
+        set_badges(info, bits, 16, 16);
+    } else {
+        set_badges(info, general[trainer + 0x1A], 8, 8);
+    }
 }
 
 /* Name is 16 bytes into the player block. Hours follow 0x20 bytes later. */
@@ -713,6 +981,9 @@ static void read_profile5(SaveInfo *info, const uint8_t *sav, int sav_len,
         money = pv_read32(sav + money_ofs);
     set_profile(info, name, money, pv_read16(sav + name_ofs + 0x20),
                 sav[name_ofs + 0x22], sav[name_ofs + 0x23]);
+    /* The badge byte follows the money word. */
+    if (money_ofs >= 0 && money_ofs + 5 <= sav_len)
+        set_badges(info, sav[money_ofs + 4], 8, 8);
 }
 
 static void read_profile3(SaveInfo *info, const uint8_t *small, const uint8_t *large, const char *game)
@@ -731,6 +1002,12 @@ static void read_profile3(SaveInfo *info, const uint8_t *small, const uint8_t *l
     }
     set_profile(info, name, pv_read32(large + money_ofs) ^ key,
                 pv_read16(small + 0x0E), small[0x10], small[0x11]);
+    if (game && strcmp(game, "FR/LG") == 0)
+        note_badges(info, flag_total(large, 4 * 0xF80, 0xEE0, 0x820, 8), 8);
+    else if (game && strcmp(game, "E") == 0)
+        note_badges(info, flag_total(large, 4 * 0xF80, 0x1270, 0x867, 8), 8);
+    else
+        note_badges(info, flag_total(large, 4 * 0xF80, 0x1220, 0x807, 8), 8);
 }
 
 static int same_word(const char *a, const char *b)
@@ -1154,6 +1431,9 @@ static void read_gen4(Dex *dex, const char *name, const uint8_t *data, size_t le
     int count;
     int slot;
     int box;
+    int platinum;
+    int hgss;
+    int trainer;
 
     general_half = active_half(data, len, 0, general_size);
     storage_half = active_half(data, len, storage_start, storage_size);
@@ -1166,8 +1446,10 @@ static void read_gen4(Dex *dex, const char *name, const uint8_t *data, size_t le
     if (save_index < 0)
         return;
     /* Platinum's trainer block sits 4 bytes later than Diamond, Pearl, and HG/SS. */
-    read_profile4(&dex->saves[save_index], general, general_size,
-                  strcmp(game, "Pt") == 0 ? 0x68 : 0x64);
+    platinum = strcmp(game, "Pt") == 0;
+    hgss = strcmp(game, "HG/SS") == 0;
+    trainer = platinum ? 0x68 : 0x64;
+    read_profile4(&dex->saves[save_index], general, general_size, trainer, hgss);
 
     count = general[party - 4];
     if (count < 0)
@@ -1188,6 +1470,9 @@ static void read_gen4(Dex *dex, const char *name, const uint8_t *data, size_t le
     /* u32 magic, then caught flags, then seen flags. Each region is 0x40 bytes. */
     read_dex_flags(&dex->saves[save_index], general, general_size,
                    dex_ofs + 4, dex_ofs + 4 + 0x40, 0x40, 1, max_species);
+    set_stars(&dex->saves[save_index],
+              stars4(&dex->saves[save_index], general, general_size, trainer, hgss),
+              5);
 }
 
 static bool gen5_footer_ok(const uint8_t *base, int main_size, int info_len)
@@ -1233,6 +1518,8 @@ static void read_gen5(Dex *dex, const char *name, const uint8_t *data, int base,
 {
     const uint8_t *sav = data + base;
     int save_index = begin_save(dex, name, game);
+    int b2 = strcmp(game, "B2/W2") == 0;
+    int main_size = b2 ? 0x26000 : 0x24000;
     int count;
     int slot;
     int box;
@@ -1240,9 +1527,8 @@ static void read_gen5(Dex *dex, const char *name, const uint8_t *data, int base,
     if (save_index < 0)
         return;
     /* Black and White keep money at 0x21200. Black 2 and White 2 use 0x21100. */
-    read_profile5(&dex->saves[save_index], sav,
-                  strcmp(game, "B2/W2") == 0 ? 0x26000 : 0x24000,
-                  0x19404, strcmp(game, "B2/W2") == 0 ? 0x21100 : 0x21200);
+    read_profile5(&dex->saves[save_index], sav, main_size,
+                  0x19404, b2 ? 0x21100 : 0x21200);
 
     count = sav[0x18E00 + 4];
     if (count < 0)
@@ -1263,6 +1549,9 @@ static void read_gen5(Dex *dex, const char *name, const uint8_t *data, int base,
     /* Caught at +0x08. Four seen regions (male, female, and both shiny) follow. */
     read_dex_flags(&dex->saves[save_index], sav + dex_ofs, dex_len,
                    0x08, 0x5C, 0x54, 4, max_species);
+    set_stars(&dex->saves[save_index],
+              stars5(&dex->saves[save_index], sav, main_size, b2),
+              5);
 }
 
 enum {
@@ -1408,6 +1697,7 @@ static void read_gen3(Dex *dex, const char *name, const uint8_t *data, size_t le
     }
     /* Small block: owned flags at 0x28, seen flags at 0x5C. Same layout in R/S/E/FR/LG. */
     read_dex_flags(&dex->saves[save_index], small, G3_USED, 0x28, 0x5C, 49, 1, 386);
+    set_stars(&dex->saves[save_index], stars3(&dex->saves[save_index], small, large, game), 4);
 }
 
 static bool try_gen5(Dex *dex, const char *name, const uint8_t *data, size_t len)

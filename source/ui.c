@@ -1977,7 +1977,7 @@ static void draw_home_note(void)
         at(9, 0);
         fputs("or still missing.", stdout);
     } else if (home_cursor == 1) {
-        fputs("Trainer, money, and", stdout);
+        fputs("Badges, stars, and", stdout);
         at(9, 0);
         fputs("the boxes on that save.", stdout);
     } else {
@@ -2173,6 +2173,8 @@ static void draw_game_card(const Dex *dex)
     char play[16];
     char stored[12];
     char shiny[12];
+    char badges[12];
+    char stars[12];
     char caught_txt[16];
     char seen_txt[16];
     int cap;
@@ -2221,6 +2223,8 @@ static void draw_game_card(const Dex *dex)
     format_play(info, play, sizeof play);
     snprintf(stored, sizeof stored, "%u", (unsigned)info->count);
     snprintf(shiny, sizeof shiny, "%d", save_shiny_count(dex, game_cursor));
+    snprintf(badges, sizeof badges, "%u/%u", (unsigned)info->badges, (unsigned)info->badge_slots);
+    snprintf(stars, sizeof stars, "%u/%u", (unsigned)info->stars, (unsigned)info->star_slots);
     snprintf(caught_txt, sizeof caught_txt, "%d/%d", caught_n, cap);
     snprintf(seen_txt, sizeof seen_txt, "%d/%d", seen_n, cap);
     at(0, 0);
@@ -2235,11 +2239,13 @@ static void draw_game_card(const Dex *dex)
     if (info->trainer[0] && info->name[0])
         fputs(info->game, stdout);
     rule_row(3);
-    value_row(5, "Money", money, INK_GOLD);
-    value_row(6, "Play time", play, INK_CREAM);
-    value_row(7, "Pokemon", stored, INK_CREAM);
-    value_row(8, "Shiny", shiny, INK_SHINY);
-    value_row(10, "Caught", caught_txt, INK_GOLD);
+    value_row(4, "Badges", badges, INK_GOLD);
+    value_row(5, "Stars", stars, INK_GOLD);
+    value_row(6, "Money", money, INK_GOLD);
+    value_row(7, "Play time", play, INK_CREAM);
+    value_row(8, "Pokemon", stored, INK_CREAM);
+    value_row(9, "Shiny", shiny, INK_SHINY);
+    value_row(11, "Caught", caught_txt, INK_GOLD);
     counts[0] = caught_n;
     counts[1] = seen_only;
     counts[2] = 0;
@@ -2249,8 +2255,8 @@ static void draw_game_card(const Dex *dex)
     inks[1] = INK_MUTED;
     inks[2] = INK_MUTED;
     inks[3] = INK_MUTED;
-    draw_progress_bar(11, counts, inks, cap);
-    value_row(13, "Seen", seen_txt, INK_CREAM);
+    draw_progress_bar(12, counts, inks, cap);
+    value_row(14, "Seen", seen_txt, INK_CREAM);
     at(21, 0);
     use_ink(INK_MUTED);
     fputs("A boxes", stdout);

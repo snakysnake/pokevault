@@ -78,6 +78,13 @@ typedef struct {
     uint16_t count;
     uint8_t minutes;
     uint8_t seconds;
+    /* Gym badges currently held. badge_slots is 8, or 16 in HeartGold and
+       SoulSilver. stars is the trainer card level. star_slots is 4 in
+       Generation 3 and 5 in Generations 4 and 5. */
+    uint8_t badges;
+    uint8_t badge_slots;
+    uint8_t stars;
+    uint8_t star_slots;
     /* Pokédex registration for this save, separate from Pokémon still stored. */
     uint8_t dex_caught[DEX_BYTES];
     uint8_t dex_seen[DEX_BYTES];

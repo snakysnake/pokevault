@@ -899,6 +899,8 @@ static void test_japanese(Dex *dex)
     CHECK(dex->saves[0].money == 12345);
     CHECK(dex->saves[0].hours == 12 && dex->saves[0].minutes == 34 && dex->saves[0].seconds == 56);
     CHECK(save_bit(dex->saves[0].dex_caught, 25));
+    CHECK(dex->saves[0].badges == 0 && dex->saves[0].badge_slots == 8);
+    CHECK(dex->saves[0].stars == 0 && dex->saves[0].star_slots == 4);
     free(sav);
 
     sav = calloc(1, 0x80000);
@@ -934,6 +936,8 @@ static void test_japanese(Dex *dex)
     CHECK(strcmp(dex->saves[0].trainer, "satoshi") == 0);
     CHECK(dex->saves[0].money == 9999);
     CHECK(dex->saves[0].hours == 4 && dex->saves[0].minutes == 5 && dex->saves[0].seconds == 6);
+    CHECK(dex->saves[0].badges == 0 && dex->saves[0].badge_slots == 8);
+    CHECK(dex->saves[0].stars == 0 && dex->saves[0].star_slots == 5);
     /* The same spelling without the nicknamed bit is the species name. */
     CHECK(pv_decrypt45(party4, 236));
     pv_write32(party4 + 0x38, pv_read32(party4 + 0x38) & ~(1u << 31));
@@ -963,6 +967,177 @@ static void test_japanese(Dex *dex)
     CHECK(dex->mons[0].species == 494 && dex->mons[0].level == 70);
     CHECK(dex->saves[0].money == 500);
     CHECK(dex->saves[0].hours == 8 && dex->saves[0].minutes == 9 && dex->saves[0].seconds == 10);
+    CHECK(dex->saves[0].badges == 0 && dex->saves[0].badge_slots == 8);
+    CHECK(dex->saves[0].stars == 0 && dex->saves[0].star_slots == 5);
+    free(sav);
+}
+
+/* Sector 0 is the small block. Large-block offset 0 lands in sector 1. */
+static uint8_t *g3_loc(uint8_t *sav, int large, int ofs)
+{
+    int sector = large ? 1 + ofs / 0xF80 : 0;
+    int within = large ? ofs % 0xF80 : ofs;
+    return sav + sector * 0x1000 + within;
+}
+
+static void catch_span(uint8_t *flags, int first, int last)
+{
+    int species;
+    for (species = first; species <= last; species++)
+        set_save_bit(flags, species);
+}
+
+static void test_cards(Dex *dex)
+{
+    uint8_t *sav;
+    int i;
+    const uint32_t key = 0x22222222u;
+
+    sav = calloc(1, 0x20000);
+    CHECK(sav != NULL);
+    /* Stone and Knuckle: flag 0x807 is bit 7 at 0x1320, flag 0x808 is bit 0 at 0x1321. */
+    g3_loc(sav, 1, 0x1320)[0] = 0x80;
+    g3_loc(sav, 1, 0x1321)[0] = 0x01;
+    pv_write32(g3_loc(sav, 1, 0x1544), 1);
+    pv_write32(g3_loc(sav, 1, 0x1568), 1);
+    pv_write16(g3_loc(sav, 0, 0x572), 50);
+    for (i = 0; i < 5; i++)
+        pv_write16(g3_loc(sav, 1, 0x2EFC + i * 0x20 + 8), 1);
+    seal_gen3(sav);
+    dex_clear(dex);
+    CHECK(save_read(dex, "Ruby", sav, 0x20000));
+    CHECK(strcmp(dex->saves[0].game, "R/S") == 0);
+    CHECK(dex->saves[0].badges == 2 && dex->saves[0].badge_slots == 8);
+    CHECK(dex->saves[0].stars == 3 && dex->saves[0].star_slots == 4);
+    catch_span(g3_loc(sav, 0, 0x28), 1, 386);
+    seal_gen3(sav);
+    dex_clear(dex);
+    CHECK(save_read(dex, "Ruby", sav, 0x20000));
+    CHECK(dex->saves[0].stars == 4);
+    /* Treecko is Hoenn slot 1. Missing it drops the dex star. */
+    g3_loc(sav, 0, 0x28)[251 >> 3] &= (uint8_t)~(1u << (251 & 7));
+    seal_gen3(sav);
+    dex_clear(dex);
+    CHECK(save_read(dex, "Ruby", sav, 0x20000));
+    CHECK(dex->saves[0].stars == 3);
+    free(sav);
+
+    sav = calloc(1, 0x20000);
+    CHECK(sav != NULL);
+    pv_write32(g3_loc(sav, 0, 0xAC), 0x01020304u);
+    g3_loc(sav, 0, 0x890)[0] = 1;
+    /* An encrypted zero is stored as the key. That is not a Hall of Fame entry. */
+    pv_write32(g3_loc(sav, 1, 0x15C4), 0x01020304u);
+    g3_loc(sav, 1, 0x1388)[0] = 0xF0;
+    g3_loc(sav, 1, 0x1389)[0] = 0xFF;
+    g3_loc(sav, 1, 0x138A)[0] = 0x03;
+    /* Stone Badge is flag 0x867, bit 7 at 0x137C. */
+    g3_loc(sav, 1, 0x137C)[0] = 0x80;
+    seal_gen3(sav);
+    dex_clear(dex);
+    CHECK(save_read(dex, "Emerald", sav, 0x20000));
+    CHECK(strcmp(dex->saves[0].game, "E") == 0);
+    CHECK(dex->saves[0].badges == 1 && dex->saves[0].badge_slots == 8);
+    CHECK(dex->saves[0].stars == 1 && dex->saves[0].star_slots == 4);
+    pv_write32(g3_loc(sav, 1, 0x15C4), 1u ^ 0x01020304u);
+    seal_gen3(sav);
+    dex_clear(dex);
+    CHECK(save_read(dex, "Emerald", sav, 0x20000));
+    CHECK(dex->saves[0].stars == 2);
+    free(sav);
+
+    sav = calloc(1, 0x20000);
+    CHECK(sav != NULL);
+    pv_write32(g3_loc(sav, 0, 0xAC), 1);
+    pv_write32(g3_loc(sav, 0, 0xF20), key);
+    /* Debut time at 0x1204, entries at 0x1228. Both stored as the key means zero. */
+    pv_write32(g3_loc(sav, 1, 0x1204), key);
+    pv_write32(g3_loc(sav, 1, 0x1228), key);
+    g3_loc(sav, 1, 0xFE4)[0] = 0xFF;
+    pv_write16(g3_loc(sav, 0, 0xB00), 200);
+    pv_write16(g3_loc(sav, 0, 0xB14), 200);
+    catch_span(g3_loc(sav, 0, 0x28), 1, 150);
+    seal_gen3(sav);
+    dex_clear(dex);
+    CHECK(save_read(dex, "LeafGreen", sav, 0x20000));
+    CHECK(strcmp(dex->saves[0].game, "FR/LG") == 0);
+    CHECK(dex->saves[0].badges == 8 && dex->saves[0].badge_slots == 8);
+    CHECK(dex->saves[0].stars == 2 && dex->saves[0].star_slots == 4);
+    pv_write32(g3_loc(sav, 1, 0x1204), 1u ^ key);
+    pv_write32(g3_loc(sav, 1, 0x1228), 1u ^ key);
+    seal_gen3(sav);
+    dex_clear(dex);
+    CHECK(save_read(dex, "LeafGreen", sav, 0x20000));
+    CHECK(dex->saves[0].stars == 3);
+    free(sav);
+
+    sav = calloc(1, 0x80000);
+    CHECK(sav != NULL);
+    mark_gen4(sav, 0xC100, 0xC100, 0x121E0);
+    sav[0x7E] = 0x0F;
+    sav[0x81] = 1;
+    dex_clear(dex);
+    CHECK(save_read(dex, "Diamond", sav, 0x80000));
+    CHECK(dex->saves[0].badges == 4 && dex->saves[0].badge_slots == 8);
+    CHECK(dex->saves[0].stars == 1 && dex->saves[0].star_slots == 5);
+    free(sav);
+
+    sav = calloc(1, 0x80000);
+    CHECK(sav != NULL);
+    mark_gen4(sav, 0xCF2C, 0xCF2C, 0x121E4);
+    sav[0x82] = 0x01;
+    dex_clear(dex);
+    CHECK(save_read(dex, "Platinum", sav, 0x80000));
+    CHECK(strcmp(dex->saves[0].game, "Pt") == 0);
+    CHECK(dex->saves[0].badges == 1 && dex->saves[0].badge_slots == 8);
+    free(sav);
+
+    sav = calloc(1, 0x80000);
+    CHECK(sav != NULL);
+    mark_gen4(sav, 0xF628, 0xF700, 0x12310);
+    sav[0x7E] = 0xFF;
+    sav[0x83] = 0x0F;
+    dex_clear(dex);
+    CHECK(save_read(dex, "HeartGold", sav, 0x80000));
+    CHECK(strcmp(dex->saves[0].game, "HG/SS") == 0);
+    CHECK(dex->saves[0].badges == 12 && dex->saves[0].badge_slots == 16);
+    free(sav);
+
+    sav = calloc(1, 0x80000);
+    CHECK(sav != NULL);
+    sav[0x21204] = 0xFF;
+    pv_write32(sav + 0x1D93C, 60);
+    memset(sav + 0x1F958, 0xFF, 12);
+    sav[0x1F964] = 0x0F;
+    pv_write16(sav + 0x21D24, 49);
+    pv_write16(sav + 0x21D26, 49);
+    seal_gen5(sav, 0x24000, 0x8C, 0x23F34, 1);
+    dex_clear(dex);
+    CHECK(save_read(dex, "Black", sav, 0x80000));
+    CHECK(strcmp(dex->saves[0].game, "B/W") == 0);
+    CHECK(dex->saves[0].badges == 8 && dex->saves[0].badge_slots == 8);
+    CHECK(dex->saves[0].stars == 3 && dex->saves[0].star_slots == 5);
+    /* The word after seconds-to-fame is not a Hall of Fame clear. */
+    pv_write32(sav + 0x1D93C, 0);
+    pv_write32(sav + 0x1D940, 60);
+    seal_gen5(sav, 0x24000, 0x8C, 0x23F34, 1);
+    dex_clear(dex);
+    CHECK(save_read(dex, "Black", sav, 0x80000));
+    CHECK(dex->saves[0].stars == 2);
+    free(sav);
+
+    sav = calloc(1, 0x80000);
+    CHECK(sav != NULL);
+    sav[0x21104] = 0x81;
+    pv_write32(sav + 0x1D93C, 60);
+    pv_write16(sav + 0x2120C, 30);
+    pv_write16(sav + 0x2120E, 30);
+    seal_gen5(sav, 0x26000, 0x94, 0x25F34, 1);
+    dex_clear(dex);
+    CHECK(save_read(dex, "White 2", sav, 0x80000));
+    CHECK(strcmp(dex->saves[0].game, "B2/W2") == 0);
+    CHECK(dex->saves[0].badges == 2 && dex->saves[0].badge_slots == 8);
+    CHECK(dex->saves[0].stars == 2 && dex->saves[0].star_slots == 5);
     free(sav);
 }
 
@@ -996,6 +1171,7 @@ int main(void)
     test_tidy_name();
     test_identity(&dex);
     test_japanese(&dex);
+    test_cards(&dex);
     test_rejects_garbage(&dex);
     if (fails) {
         printf("%d checks failed\n", fails);
