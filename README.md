@@ -1,12 +1,20 @@
-Download .nds file: https://drive.google.com/file/d/1LvC5g9VQ6L-VBDcoDpvZ0nYO8c8tdP0W/view
-
-Or build it yourself using the source code.
-
 # PokeVault
 
-PokeVault is a Nintendo DS homebrew that reads Pokémon saves off the SD card and shows them as one National Dex. It is read only. It never writes to a save.
+<img src="pokevault-boxart.png" alt="PokeVault box art" width="230">
 
-It is an unofficial fan tool, not affiliated with Nintendo, Game Freak, or The Pokémon Company.
+Every save on the card, gathered into one National Dex.
+
+![PokeVault running on a Nintendo DS](pokevault.jpg)
+
+Boot it on a DS that already runs homebrew. PokeVault walks the SD card, reads the Pokémon saves it finds, and lays them out as a single Pokédex from Bulbasaur to Genesect. Generation 3, 4, and 5 share the list. Open a species and every copy you have is there: level, nature, moves, the ball it was caught in, and the game it came from. A shiny shows its shiny sprite.
+
+It only reads. It never writes to a save.
+
+An unofficial fan tool, not affiliated with Nintendo, Game Freak, or The Pokémon Company.
+
+**Download:** [pokevault.nds](https://drive.google.com/file/d/1LvC5g9VQ6L-VBDcoDpvZ0nYO8c8tdP0W/view)
+
+Or build it from this source.
 
 ## What it does
 

@@ -6,6 +6,8 @@ ifeq ($(strip $(DEVKITARM)),)
 $(error "Please set DEVKITARM in your environment. export DEVKITARM=<path to>devkitARM")
 endif
 
+ROOT := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))
+
 # These set the information text in the nds file
 GAME_TITLE     := pokevault
 GAME_SUBTITLE1 := Save reader
@@ -151,7 +153,9 @@ else
   ifeq ($(suffix $(ICON)), .grf)
     export GAME_ICON := $(CURDIR)/$(ICON)
   else
-    export GAME_ICON := $(CURDIR)/$(BUILD)/$(notdir $(basename $(ICON))).grf
+    # 8-bit BMP, not a grit GRF. ndstool misreads grit 0.9 GRFs and
+    # the menu icon comes out scrambled.
+    export GAME_ICON := $(CURDIR)/$(BUILD)/$(notdir $(basename $(ICON))).bmp
   endif
 endif
 
@@ -228,12 +232,12 @@ $(SOUNDBANK) : $(MODFILES)
 	grit $< -fts -o$*
 
 #---------------------------------------------------------------------------------
-# Convert non-GRF game icon to GRF if needed
+# Paletted banner bitmap. Index 0 is the transparent magenta.
 #---------------------------------------------------------------------------------
-$(GAME_ICON): $(notdir $(ICON))
+$(GAME_ICON): $(ROOT)/$(ICON)
 #---------------------------------------------------------------------------------
-	@echo convert $(notdir $<)
-	@grit $< -g -gt -gB4 -gT FF00FF -m! -p -pe 16 -fh! -ftr
+	@echo icon $(notdir $@)
+	@python3 $(ROOT)/tools/build_icon.py $< $@
 
 -include $(DEPSDIR)/*.d
 
