@@ -93,6 +93,10 @@ static int copy_page;
 static uint16_t focus_species;
 static uint16_t evo_anchor;
 static int evo_cursor;
+/* Set by the evolution page so the sprite follows the highlighted stage. */
+static unsigned face_species;
+static int face_shiny;
+static int face_on;
 static int move_cursor;
 static int move_row0 = 10;
 static int page = PAGE_HOME;
@@ -3129,33 +3133,18 @@ static int load_family(unsigned species, EvoMember *mem, int cap)
     return n;
 }
 
-/* Screen row of a stage's name. A method, when there is one, sits on the row above. */
-static int family_species_row(const EvoMember *mem, int index)
+/* Names sit in one block beside the sprite, one stage per row. */
+static int family_species_row(int index)
 {
-    int row = 3;
-    int i;
-
-    for (i = 0; i <= index; i++) {
-        if (mem[i].method)
-            row++;
-        if (i == index)
-            return row;
-        row++;
-    }
-    return row;
+    return 2 + index;
 }
 
-static int family_at_row(const EvoMember *mem, int n, int screen_row)
+static int family_at_row(int n, int screen_row)
 {
-    int i;
-
-    for (i = 0; i < n; i++) {
-        int species_row = family_species_row(mem, i);
-        int method_row = mem[i].method ? species_row - 1 : -1;
-        if (screen_row == species_row || screen_row == method_row)
-            return i;
-    }
-    return -1;
+    int index = screen_row - 2;
+    if (index < 0 || index >= n || screen_row > 9)
+        return -1;
+    return index;
 }
 
 static void put_span(int row, int col, int ink, const char *text)
@@ -3194,13 +3183,49 @@ static int evo_ink(const Dex *dex, unsigned species, int selected)
     return INK_MUTED;
 }
 
-static int gen5_save(const Dex *dex, const MonRef *mon)
+static int save_generation(const Dex *dex, const MonRef *mon)
 {
     const char *game;
     if (!dex || !mon || mon->save_index >= dex->save_count)
         return 0;
     game = dex->saves[mon->save_index].game;
-    return strcmp(game, "B/W") == 0 || strcmp(game, "B2/W2") == 0;
+    if (strcmp(game, "R/S") == 0 || strcmp(game, "E") == 0 || strcmp(game, "FR/LG") == 0)
+        return 3;
+    if (strcmp(game, "D/P") == 0 || strcmp(game, "Pt") == 0 || strcmp(game, "HG/SS") == 0)
+        return 4;
+    if (strcmp(game, "B/W") == 0 || strcmp(game, "B2/W2") == 0)
+        return 5;
+    return 0;
+}
+
+static void use_face(unsigned species, int shiny)
+{
+    face_species = species;
+    face_shiny = shiny ? 1 : 0;
+    face_on = 1;
+}
+
+static const char *method_into(unsigned species, int generation)
+{
+    unsigned parent;
+    int n;
+    int i;
+
+    parent = species_prevo(species);
+    if (!parent)
+        return NULL;
+    n = species_evo_count(parent);
+    for (i = 0; i < n; i++) {
+        if (species_evo_into(parent, i) == species)
+            return species_evo_how_gen(parent, i, generation);
+    }
+    return NULL;
+}
+
+static int path_in_generation(unsigned species, uint16_t item, int generation)
+{
+    TradePath ready;
+    return species_trade_ready_gen(species, item, generation, &ready);
 }
 
 /* "Y trade" when this copy can go out and come back evolved.
@@ -3210,6 +3235,12 @@ static int trade_hint(const Dex *dex, const MonRef *mon, char *out, int cap)
     TradePath ready;
     TradePath paths[4];
     int n;
+    int gen;
+    int gen4 = 0;
+    int gen5 = 0;
+    int allowed = 0;
+    int i;
+    uint16_t need = 0;
     const char *item;
 
     if (!out || cap < 1)
@@ -3220,23 +3251,110 @@ static int trade_hint(const Dex *dex, const MonRef *mon, char *out, int cap)
     n = species_trade_paths(mon->species, paths, 4);
     if (n <= 0)
         return 0;
-    if (!gen5_save(dex, mon)) {
-        snprintf(out, (size_t)cap, "Gen 5 save");
+    gen = save_generation(dex, mon);
+    for (i = 0; i < n; i++) {
+        if (path_in_generation(mon->species, paths[i].item, 4))
+            gen4 = 1;
+        if (path_in_generation(mon->species, paths[i].item, 5))
+            gen5 = 1;
+        if ((gen == 4 || gen == 5) && path_in_generation(mon->species, paths[i].item, gen)) {
+            allowed++;
+            need = paths[i].item;
+        }
+    }
+    if (gen == 3) {
+        /* Feebas is already at high Beauty here, so it is not waiting on a later trade. */
+        if (!gen4)
+            return 0;
+        snprintf(out, (size_t)cap, "Gen 4 or 5");
         return 1;
     }
-    if (species_trade_ready(mon->species, mon->item, &ready)) {
+    if (gen != 4 && gen != 5) {
+        if (gen4)
+            snprintf(out, (size_t)cap, "Gen 4 or 5");
+        else if (gen5)
+            snprintf(out, (size_t)cap, "Gen 5 save");
+        else
+            return 0;
+        return 1;
+    }
+    if (!allowed)
+        return 0;
+    if (species_trade_ready_gen(mon->species, mon->item, gen, &ready)) {
         snprintf(out, (size_t)cap, "Y trade");
         return 1;
     }
-    if (n > 1) {
+    if (allowed > 1) {
         snprintf(out, (size_t)cap, "Needs a sea item");
         return 1;
     }
-    item = item_name(4, paths[0].item);
+    item = item_name(4, need);
     if (!item[0])
         item = "item";
     snprintf(out, (size_t)cap, "Needs %s", item);
     return 1;
+}
+
+static void rule_to(int row)
+{
+    int i;
+    int width = line_cols(row);
+    at(row, 0);
+    use_ink(INK_MUTED);
+    for (i = 0; i < width; i++)
+        putchar(GLYPH_RULE);
+}
+
+static int stage_is_shiny(const Dex *dex, unsigned stage, unsigned open_species, int open_shiny)
+{
+    int living = 0;
+    int shiny = 0;
+
+    if (stage == open_species)
+        return open_shiny;
+    if (!dex || stage < 1 || stage > NATIONAL_DEX)
+        return 0;
+    living_marks(dex, &catalog[stage - 1], &living, &shiny);
+    return shiny;
+}
+
+static void draw_evo_method(const Dex *dex, const MonRef *mon, unsigned species, int row)
+{
+    const char *how4 = method_into(species, 4);
+    const char *how5 = method_into(species, 5);
+    const char *how;
+    int gen = save_generation(dex, mon);
+    unsigned parent = species_prevo(species);
+    char line[40];
+
+    put_span(row, 0, INK_GOLD, species_name(species));
+    row++;
+    if (!parent) {
+        put_span(row, 0, INK_MUTED, "Basic form");
+        return;
+    }
+    snprintf(line, sizeof line, "From %s", species_name(parent));
+    put_span(row, 0, INK_MUTED, line);
+    row++;
+    if ((!gen || gen > 5) && how4 && how5 && strcmp(how4, how5) != 0) {
+        snprintf(line, sizeof line, "Gen 4  %s", how4);
+        put_span(row, 0, INK_CREAM, line);
+        row++;
+        snprintf(line, sizeof line, "Gen 5  %s", how5);
+        put_span(row, 0, INK_CREAM, line);
+        return;
+    }
+    how = (gen > 0 && gen <= 4) ? how4 : how5;
+    if (!how)
+        how = how5 ? how5 : how4;
+    if (how)
+        put_span(row, 0, INK_CREAM, how);
+    if (mon && gen && how4 && how5 && strcmp(how4, how5) != 0) {
+        const char *game = dex->saves[mon->save_index].game;
+        int glen = text_len(game);
+        if (glen > 0 && glen < COLS)
+            put_span(row, COLS - glen, INK_MUTED, game);
+    }
 }
 
 static void draw_copy_evo(const Dex *dex, const MonRef *mon, unsigned species, unsigned form, int shiny)
@@ -3244,7 +3362,7 @@ static void draw_copy_evo(const Dex *dex, const MonRef *mon, unsigned species, u
     EvoMember mem[16];
     int n;
     int i;
-    int last = 3;
+    char hint[28];
 
     if (mon)
         draw_mon_title(mon);
@@ -3252,42 +3370,49 @@ static void draw_copy_evo(const Dex *dex, const MonRef *mon, unsigned species, u
         draw_species_title(species, form, shiny);
     n = load_family(species, mem, 16);
     if (n <= 1) {
+        use_face(species, shiny);
         at(3, 0);
         use_ink(INK_MUTED);
         fputs("Does not evolve.", stdout);
         return;
     }
-    for (i = 0; i < n; i++) {
-        char label[28];
-        int row = family_species_row(mem, i);
-        if (mem[i].method && row - 1 <= 19)
-            put_span(row - 1, mem[i].indent, INK_MUTED, mem[i].method);
-        if (row > 19)
-            break;
-        snprintf(label, sizeof label, "#%03u %s", mem[i].species, species_name(mem[i].species));
-        put_span(row, mem[i].indent, evo_ink(dex, mem[i].species, i == evo_cursor), label);
-        last = row;
+    if (evo_cursor < 0 || evo_cursor >= n)
+        evo_cursor = 0;
+    for (i = 0; i < n && i < 8; i++) {
+        int row = family_species_row(i);
+        int name_col = mem[i].indent == 0 ? 2 : mem[i].indent + 2;
+        if (i == evo_cursor)
+            put_span(row, mem[i].indent == 0 ? 0 : mem[i].indent, INK_GOLD, ">");
+        else if (mem[i].indent > 0)
+            put_span(row, mem[i].indent, INK_MUTED, "-");
+        put_span(row, name_col, evo_ink(dex, mem[i].species, i == evo_cursor),
+                 species_name(mem[i].species));
     }
-    if (last < 20) {
-        char hint[28];
-        at(20, 0);
-        use_ink(INK_MUTED);
-        fputs("A open", stdout);
-        if (trade_hint(dex, mon, hint, (int)sizeof hint))
-            put_span(20, 8, INK_MUTED, hint);
-    }
+    use_face(mem[evo_cursor].species,
+             stage_is_shiny(dex, mem[evo_cursor].species, species, shiny));
+    rule_to(10);
+    draw_evo_method(dex, mon, mem[evo_cursor].species, 11);
+    at(20, 0);
+    use_ink(INK_MUTED);
+    fputs("A open", stdout);
+    if (trade_hint(dex, mon, hint, (int)sizeof hint))
+        put_span(20, 8, INK_MUTED, hint);
 }
 
-static void draw_trade_confirm(const MonRef *mon)
+static void draw_trade_confirm(const Dex *dex, const MonRef *mon)
 {
     TradePath path;
     char line[40];
     const char *item;
+    int gen = save_generation(dex, mon);
 
-    if (!mon || !species_trade_ready(mon->species, mon->item, &path) || path.target != trade_target) {
+    if (!mon || (gen != 4 && gen != 5)
+        || !species_trade_ready_gen(mon->species, mon->item, gen, &path)
+        || path.target != trade_target) {
         trade_ask = 0;
         return;
     }
+    use_face(path.target, (mon->flags & MON_SHINY) != 0);
     snprintf(line, sizeof line, "Trade this %s?", species_name(mon->species));
     put_span(4, 0, INK_CREAM, line);
     put_span(10, 0, INK_MUTED, "Comes back as");
@@ -3322,7 +3447,7 @@ static int evo_steer(const Dex *dex, uint32_t hit, uint32_t down)
     if (n <= 1)
         return 0;
     if (hit & KEY_TOUCH) {
-        int found = family_at_row(mem, n, touch_row(hit));
+        int found = family_at_row(n, touch_row(hit));
         if (found >= 0 && found != evo_cursor) {
             evo_cursor = found;
             return 1;
@@ -3369,6 +3494,7 @@ static int evo_steer(const Dex *dex, uint32_t hit, uint32_t down)
 static void draw(const Dex *dex)
 {
     int copies = 0;
+    face_on = 0;
     sprites_hide_top();
     if (page == PAGE_GAMES && boxes_on && dex->save_count > 0) {
         clamp_box(dex);
@@ -3453,16 +3579,15 @@ static void draw(const Dex *dex)
                                   || mon->moves[move_cursor] == 0))
             view = VIEW_COPIES;
         if (trade_ask) {
-            draw_trade_confirm(mon);
+            draw_trade_confirm(dex, mon);
             if (!trade_ask) {
                 draw_copy_evo(dex, mon, mon ? mon->species : row->species,
                               mon ? mon->form : 0, mon && (mon->flags & MON_SHINY));
                 draw_card_pager(copy_page);
-                if (mon)
-                    sprites_show(mon->species, (mon->flags & MON_SHINY) != 0, 0);
-                else
-                    sprites_show(row->species, 0, 0);
-            } else if (mon)
+            }
+            if (face_on)
+                sprites_show(face_species, face_shiny, 0);
+            else if (mon)
                 sprites_show(mon->species, (mon->flags & MON_SHINY) != 0, (mon->flags & MON_EGG) != 0);
             else
                 sprites_show(row->species, 0, 0);
@@ -3489,7 +3614,10 @@ static void draw(const Dex *dex)
             else
                 draw_copy_card(dex, mon, view == VIEW_PICK);
             draw_card_pager(copy_page);
-            sprites_show(mon->species, (mon->flags & MON_SHINY) != 0, (mon->flags & MON_EGG) != 0);
+            if (face_on)
+                sprites_show(face_species, face_shiny, 0);
+            else
+                sprites_show(mon->species, (mon->flags & MON_SHINY) != 0, (mon->flags & MON_EGG) != 0);
         } else {
             if (copy_page == CARD_ENTRY)
                 draw_copy_entry(NULL, row->species, 0, 0);
@@ -3500,7 +3628,10 @@ static void draw(const Dex *dex)
             else
                 draw_uncaught_stats(row->species);
             draw_card_pager(copy_page);
-            sprites_show(row->species, 0, 0);
+            if (face_on)
+                sprites_show(face_species, face_shiny, 0);
+            else
+                sprites_show(row->species, 0, 0);
         }
     } else if (row_count > 0) {
         draw_species_card(dex, &rows[dex_cursor]);
@@ -4193,8 +4324,9 @@ void ui_run(Dex *dex)
         } else if (view == VIEW_COPIES && copy_page == CARD_EVO && (hit & KEY_Y)) {
             const MonRef *held = current_copy(dex);
             TradePath path;
-            if (held && (held->flags & MON_EGG) == 0 && gen5_save(dex, held)
-                && species_trade_ready(held->species, held->item, &path)) {
+            if (held && (held->flags & MON_EGG) == 0
+                && species_trade_ready_gen(held->species, held->item,
+                                           save_generation(dex, held), &path)) {
                 trade_target = path.target;
                 trade_error[0] = 0;
                 trade_ask = 1;

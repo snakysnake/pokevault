@@ -111,14 +111,32 @@ int species_trade_paths(unsigned species, TradePath *out, int cap)
     return n;
 }
 
-int species_trade_ready(unsigned species, unsigned held, TradePath *out)
+/* Feebas evolves by beauty until Generation 5, and the Unova trades
+   are not in a Generation 4 save. */
+static int trade_allowed(const TradeDef *row, int generation)
+{
+    if (!row)
+        return 0;
+    if (generation >= 5)
+        return 1;
+    if (generation == 4 && row->from < 494 && row->from != 349)
+        return 1;
+    return 0;
+}
+
+int species_trade_ready_gen(unsigned species, unsigned held, int generation, TradePath *out)
 {
     const TradeDef *row = find_trade(species, held, 0);
-    if (!row || !out)
+    if (!trade_allowed(row, generation) || !out)
         return 0;
     out->target = row->to;
     out->item = row->item;
     return 1;
+}
+
+int species_trade_ready(unsigned species, unsigned held, TradePath *out)
+{
+    return species_trade_ready_gen(species, held, 5, out);
 }
 
 static uint8_t mapped_ability(uint8_t current, const TradeDef *row)
@@ -258,44 +276,18 @@ static void seal_footer(uint8_t *sav, int main_size, int info_len)
     pv_write16(footer + info_len + 0x0E, crc);
 }
 
-int trade_apply(uint8_t *file, size_t len, int party, int box, int slot,
-                uint16_t expect_species, uint16_t target, uint8_t *ability_out)
+/* Writes the evolved record and reports which seen row Generation 5 uses.
+   The caller copies the bytes back only after this returns TRADE_OK. */
+static int rewrite_mon(uint8_t *pk, int pk_len, int party, uint16_t expect_species,
+                       uint16_t target, int generation, uint8_t *ability_out, int *region_out)
 {
-    int main_size = 0;
-    int info_len = 0;
-    int base;
-    int pk_len;
-    int b2;
-    int dex_at;
-    int dex_len;
-    int footer;
-    int gender;
-    int region;
-    uint8_t pk[220];
-    uint8_t *sav;
-    uint8_t *raw;
     uint16_t species;
     uint16_t held;
     uint32_t ivs;
+    int gender;
+    int region;
     const TradeDef *row;
 
-    if (!file || expect_species == 0 || target == 0)
-        return TRADE_NO;
-    base = active_half(file, len, &main_size, &info_len);
-    if (base < 0)
-        return TRADE_BAD;
-    if (party) {
-        if (slot < 0 || slot > 5)
-            return TRADE_MISMATCH;
-        raw = file + base + 0x18E08 + slot * 220;
-        pk_len = 220;
-    } else {
-        if (box < 0 || box > 23 || slot < 0 || slot > 29)
-            return TRADE_MISMATCH;
-        raw = file + base + 0x400 + box * 0x1000 + slot * 136;
-        pk_len = 136;
-    }
-    memcpy(pk, raw, (size_t)pk_len);
     if (!pv_decrypt45(pk, pk_len))
         return TRADE_BAD;
     species = pv_read16(pk + 8);
@@ -306,7 +298,7 @@ int trade_apply(uint8_t *file, size_t len, int party, int box, int slot,
         return TRADE_EGG;
     held = pv_read16(pk + 0x0A);
     row = find_trade(species, held, target);
-    if (!row)
+    if (!trade_allowed(row, generation))
         return TRADE_NO;
 
     pv_write16(pk + 8, row->to);
@@ -325,10 +317,198 @@ int trade_apply(uint8_t *file, size_t len, int party, int box, int slot,
     region = gender;
     if (pv_is_shiny(pv_read32(pk), pv_read16(pk + 0x0C), pv_read16(pk + 0x0E)))
         region += 2;
+    if (region_out)
+        *region_out = region;
     if (ability_out)
         *ability_out = pk[0x15];
     pv_refresh_checksum45(pk);
     pv_encrypt45(pk, pk_len);
+    return TRADE_OK;
+}
+
+typedef struct {
+    int general_size;
+    int storage_start;
+    int storage_size;
+    int party;
+    int box_start;
+    int box_stride;
+    int dex_ofs;
+    int footer;
+} Gen4Map;
+
+/* HeartGold and SoulSilver first: their general block is the largest,
+   and a shorter size must not be accepted by accident. */
+static const Gen4Map gen4_maps[] = {
+    { 0xF628, 0xF700, 0x12310, 0x98, 0, 0x1000, 0x12B8, 0x10 },
+    { 0xCF2C, 0xCF2C, 0x121E4, 0xA0, 4, 30 * 136, 0x1328, 0x14 },
+    { 0xC100, 0xC100, 0x121E0, 0x98, 4, 30 * 136, 0x12DC, 0x14 }
+};
+
+static int gen4_marked(const uint8_t *block, int length)
+{
+    uint32_t magic;
+    if (pv_read32(block + length - 0x0C) != (uint32_t)length)
+        return 0;
+    magic = pv_read32(block + length - 0x08);
+    return magic == 0x20060623u || magic == 0x20070903u;
+}
+
+static int gen4_which(const uint8_t *data, size_t len)
+{
+    int i;
+    for (i = 0; i < (int)(sizeof gen4_maps / sizeof gen4_maps[0]); i++) {
+        int half;
+        int size = gen4_maps[i].general_size;
+        for (half = 0; half < 2; half++) {
+            size_t base = (size_t)half * 0x40000u;
+            if (base + (size_t)size > len)
+                continue;
+            if (gen4_marked(data + base, size))
+                return i;
+        }
+    }
+    return -1;
+}
+
+/* 1 when b is the newer counter. A full wrap loses to every count but the one before it. */
+static int newer_count(uint32_t a, uint32_t b)
+{
+    if (a == 0xFFFFFFFFu && b != 0xFFFFFFFEu)
+        return 1;
+    if (b == 0xFFFFFFFFu && a != 0xFFFFFFFEu)
+        return 0;
+    if (a > b)
+        return 0;
+    if (a < b)
+        return 1;
+    return 0;
+}
+
+/* 0 or 1. The two partitions can disagree, so party and boxes are chosen apart. */
+static int gen4_half(const uint8_t *data, size_t len, int begin, int length)
+{
+    size_t off;
+    int ok0;
+    int ok1;
+    uint32_t major0;
+    uint32_t major1;
+
+    ok0 = (size_t)begin + (size_t)length <= len;
+    ok1 = (size_t)begin + 0x40000u + (size_t)length <= len;
+    if (!ok0 && !ok1)
+        return -1;
+    if (!ok1)
+        return 0;
+    if (!ok0)
+        return 1;
+
+    off = (size_t)begin + (size_t)length - 0x14u;
+    major0 = pv_read32(data + off);
+    major1 = pv_read32(data + off + 0x40000u);
+    if (major0 != major1)
+        return newer_count(major0, major1);
+    return newer_count(pv_read32(data + off + 4), pv_read32(data + off + 4 + 0x40000u));
+}
+
+static void seal_gen4(uint8_t *block, int size, int footer)
+{
+    uint32_t count = pv_read32(block + size - 0x14);
+    uint16_t crc;
+    if (count < 0xFFFFFFFFu)
+        pv_write32(block + size - 0x14, count + 1);
+    crc = pv_crc16_ccitt(block, (size_t)(size - footer));
+    pv_write16(block + size - 2, crc);
+}
+
+static int trade_apply4(uint8_t *file, size_t len, int party, int box, int slot,
+                        uint16_t expect_species, uint16_t target, uint8_t *ability_out)
+{
+    const Gen4Map *map;
+    int which;
+    int general_half;
+    int storage_half;
+    int pk_len;
+    int rc;
+    uint8_t pk[236];
+    uint8_t *general;
+    uint8_t *raw;
+
+    which = gen4_which(file, len);
+    if (which < 0)
+        return TRADE_BAD;
+    map = &gen4_maps[which];
+    general_half = gen4_half(file, len, 0, map->general_size);
+    storage_half = gen4_half(file, len, map->storage_start, map->storage_size);
+    if (general_half < 0 || storage_half < 0)
+        return TRADE_BAD;
+    general = file + (size_t)general_half * 0x40000u;
+    if (party) {
+        if (slot < 0 || slot > 5)
+            return TRADE_MISMATCH;
+        raw = general + map->party + slot * 236;
+        pk_len = 236;
+    } else {
+        uint8_t *storage;
+        if (box < 0 || box > 17 || slot < 0 || slot > 29)
+            return TRADE_MISMATCH;
+        storage = file + (size_t)storage_half * 0x40000u + (size_t)map->storage_start;
+        raw = storage + map->box_start + box * map->box_stride + slot * 136;
+        pk_len = 136;
+    }
+    memcpy(pk, raw, (size_t)pk_len);
+    rc = rewrite_mon(pk, pk_len, party, expect_species, target, 4, ability_out, NULL);
+    if (rc != TRADE_OK)
+        return rc;
+    memcpy(raw, pk, (size_t)pk_len);
+    /* Caught, then one seen region. Generation 4 does not split seen by gender. */
+    set_dex_bit(general + map->dex_ofs + 4, target);
+    set_dex_bit(general + map->dex_ofs + 4 + 0x40, target);
+    if (!party) {
+        uint8_t *storage = file + (size_t)storage_half * 0x40000u + (size_t)map->storage_start;
+        seal_gen4(storage, map->storage_size, map->footer);
+    }
+    seal_gen4(general, map->general_size, map->footer);
+    return TRADE_OK;
+}
+
+int trade_apply(uint8_t *file, size_t len, int party, int box, int slot,
+                uint16_t expect_species, uint16_t target, uint8_t *ability_out)
+{
+    int main_size = 0;
+    int info_len = 0;
+    int base;
+    int pk_len;
+    int b2;
+    int dex_at;
+    int dex_len;
+    int footer;
+    int region = 0;
+    int rc;
+    uint8_t pk[220];
+    uint8_t *sav;
+    uint8_t *raw;
+
+    if (!file || expect_species == 0 || target == 0)
+        return TRADE_NO;
+    base = active_half(file, len, &main_size, &info_len);
+    if (base < 0)
+        return trade_apply4(file, len, party, box, slot, expect_species, target, ability_out);
+    if (party) {
+        if (slot < 0 || slot > 5)
+            return TRADE_MISMATCH;
+        raw = file + base + 0x18E08 + slot * 220;
+        pk_len = 220;
+    } else {
+        if (box < 0 || box > 23 || slot < 0 || slot > 29)
+            return TRADE_MISMATCH;
+        raw = file + base + 0x400 + box * 0x1000 + slot * 136;
+        pk_len = 136;
+    }
+    memcpy(pk, raw, (size_t)pk_len);
+    rc = rewrite_mon(pk, pk_len, party, expect_species, target, 5, ability_out, &region);
+    if (rc != TRADE_OK)
+        return rc;
     memcpy(raw, pk, (size_t)pk_len);
 
     sav = file + base;
@@ -336,8 +516,8 @@ int trade_apply(uint8_t *file, size_t len, int party, int box, int slot,
     dex_at = b2 ? 0x21400 : 0x21600;
     dex_len = b2 ? 0x4DC : 0x4D4;
     footer = main_size - 0x100;
-    set_dex_bit(sav + dex_at + 0x08, row->to);
-    set_dex_bit(sav + dex_at + 0x5C + region * 0x54, row->to);
+    set_dex_bit(sav + dex_at + 0x08, target);
+    set_dex_bit(sav + dex_at + 0x5C + region * 0x54, target);
     if (party)
         seal_span(sav, 0x18E00, 0x534, footer + 0x34);
     else
@@ -383,6 +563,17 @@ static int side_path(char *dst, size_t cap, const char *path, const char *suffix
     return wrote > 0 && (size_t)wrote < cap;
 }
 
+static int game_generation(const char *game)
+{
+    if (!game)
+        return 0;
+    if (strcmp(game, "D/P") == 0 || strcmp(game, "Pt") == 0 || strcmp(game, "HG/SS") == 0)
+        return 4;
+    if (strcmp(game, "B/W") == 0 || strcmp(game, "B2/W2") == 0)
+        return 5;
+    return 0;
+}
+
 static void mark_save_bit(uint8_t *bits, int species)
 {
     int bit;
@@ -410,7 +601,8 @@ int trade_commit(Dex *dex, MonRef *mon, uint16_t target)
     if (!dex || !mon || mon->save_index >= dex->save_count)
         return TRADE_NO;
     info = &dex->saves[mon->save_index];
-    if (!info->path[0] || !species_trade_ready(mon->species, mon->item, &path)
+    if (!info->path[0]
+        || !species_trade_ready_gen(mon->species, mon->item, game_generation(info->game), &path)
         || path.target != target)
         return TRADE_NO;
     if ((mon->flags & MON_EGG) != 0)

@@ -17,6 +17,10 @@ int species_evo_count(unsigned species);
 uint16_t species_evo_into(unsigned species, int index);
 const char *species_evo_how(unsigned species, int index);
 
+/* generation 4 and earlier uses that era's method. Generation 5 matches
+   species_evo_how. Feebas is the line that changed between them. */
+const char *species_evo_how_gen(unsigned species, int index, int generation);
+
 /* The whole line, basic form first. Returns how many stages were written. */
 int species_family(unsigned species, EvoMember *out, int cap);
 

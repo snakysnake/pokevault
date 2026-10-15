@@ -1298,6 +1298,10 @@ static void test_evo(void)
     n = species_family(350, mem, 16);
     stage = family_stage(mem, n, 350);
     CHECK(stage && strcmp(stage->method, "Trade Prism Scale") == 0);
+    CHECK(strcmp(species_evo_how_gen(349, 0, 5), "Trade Prism Scale") == 0);
+    CHECK(strcmp(species_evo_how_gen(349, 0, 4), "High Beauty") == 0);
+    CHECK(strcmp(species_evo_how_gen(349, 0, 3), "High Beauty") == 0);
+    CHECK(strcmp(species_evo_how_gen(133, 0, 4), species_evo_how(133, 0)) == 0);
     n = species_family(462, mem, 16);
     stage = family_stage(mem, n, 462);
     CHECK(stage && strcmp(stage->method, "Magnetic field") == 0);
@@ -1346,6 +1350,11 @@ static void test_evo(void)
     }
 }
 
+static int gen4_crc_ok(const uint8_t *block, int size, int footer)
+{
+    return pv_crc16_ccitt(block, (size_t)(size - footer)) == pv_read16(block + size - 2);
+}
+
 static int span_ok(const uint8_t *sav, int start, int length, int mirror)
 {
     uint16_t crc = pv_crc16_ccitt(sav + start, (size_t)length);
@@ -1376,6 +1385,7 @@ static void test_trade(Dex *dex)
     uint8_t *sav;
     uint8_t *older;
     uint8_t pk[220];
+    uint8_t party[236];
     uint8_t box[136];
     TradePath path;
     uint8_t ability = 0;
@@ -1400,6 +1410,11 @@ static void test_trade(Dex *dex)
     CHECK(species_trade_paths(64, &path, 1) == 1 && path.target == 65 && path.item == 0);
     CHECK(!species_trade_ready(349, 0, &path));
     CHECK(species_trade_ready(349, 537, &path) && path.target == 350 && path.item == 537);
+    CHECK(species_trade_ready_gen(64, 0, 4, &path) && path.target == 65);
+    CHECK(!species_trade_ready_gen(349, 537, 4, &path));
+    CHECK(species_trade_ready_gen(349, 537, 5, &path) && path.target == 350);
+    CHECK(!species_trade_ready_gen(525, 0, 4, &path));
+    CHECK(species_trade_ready_gen(95, 233, 4, &path) && path.target == 208);
     CHECK(species_trade_ready(366, 227, &path) && path.target == 368);
     CHECK(species_trade_ready(64, 20, &path) && path.target == 65 && path.item == 0);
     CHECK(pv_is_shiny(1, 1, 0));
@@ -1565,6 +1580,105 @@ static void test_trade(Dex *dex)
     CHECK(dex->mons[0].species == 526 && dex->mons[0].box == 1 && dex->mons[0].slot == 1);
 
     CHECK(trade_apply(sav, 32, 0, 0, 0, 64, 65, &ability) == TRADE_BAD);
+
+    /* Platinum keeps the evolved Kadabra, and refuses the Generation 5 Feebas trade. */
+    memset(sav, 0, 0x80000);
+    mark_gen4(sav, 0xCF2C, 0xCF2C, 0x121E4);
+    fill_pk45(box, 136, 9, 64, 1000, 1, 0, 0, 0);
+    retouch45(box, 136, 39, 0, 10, 1, 0, ivs, 0, 0);
+    memcpy(sav + 0xCF2C + 4, box, sizeof box);
+    CHECK(trade_apply(sav, 0x80000, 0, 0, 0, 64, 65, &ability) == TRADE_OK);
+    CHECK(ability == 39);
+    CHECK(gen4_crc_ok(sav, 0xCF2C, 0x14));
+    CHECK(gen4_crc_ok(sav + 0xCF2C, 0x121E4, 0x14));
+    CHECK(pv_read32(sav + 0xCF2C - 0x14) == 5);
+    CHECK(pv_read32(sav + 0xCF2C + 0x121E4 - 0x14) == 5);
+    CHECK(pv_read32(sav + 0x40000 + 0xCF2C - 0x14) == 0);
+    memcpy(box, sav + 0xCF2C + 4, sizeof box);
+    CHECK(pv_decrypt45(box, 136));
+    CHECK(pv_read16(box + 8) == 65 && box[0x15] == 39 && box[0x14] == 70);
+    CHECK(save_bit(sav + 0x1328 + 4, 65));
+    CHECK(save_bit(sav + 0x1328 + 4 + 0x40, 65));
+    dex_clear(dex);
+    CHECK(save_read(dex, "Platinum", sav, 0x80000));
+    CHECK(strcmp(dex->saves[0].game, "Pt") == 0);
+    CHECK(dex->mons[0].species == 65 && dex->mons[0].box == 0 && dex->mons[0].slot == 0);
+    CHECK(save_bit(dex->saves[0].dex_caught, 65));
+
+    fill_pk45(box, 136, 1, 349, 1000, 1, 0, 0, 0);
+    retouch45(box, 136, 91, 537, 40, 0, 3, ivs, 0, 0);
+    memcpy(sav + 0xCF2C + 4 + 136, box, sizeof box);
+    CHECK(trade_apply(sav, 0x80000, 0, 0, 1, 349, 350, &ability) == TRADE_NO);
+    CHECK(pv_read32(sav + 0xCF2C + 0x121E4 - 0x14) == 5);
+    memcpy(box, sav + 0xCF2C + 4 + 136, sizeof box);
+    CHECK(pv_decrypt45(box, 136));
+    CHECK(pv_read16(box + 8) == 349 && pv_read16(box + 0x0A) == 537);
+
+    /* The newer partition is the one a real save would load. */
+    memset(sav, 0, 0x80000);
+    mark_gen4(sav + 0x40000, 0xCF2C, 0xCF2C, 0x121E4);
+    pv_write32(sav + 0x40000 + 0xCF2C - 0x14, 8);
+    pv_write32(sav + 0x40000 + 0xCF2C + 0x121E4 - 0x14, 8);
+    fill_pk45(box, 136, 9, 64, 1000, 1, 0, 0, 0);
+    retouch45(box, 136, 28, 0, 10, 0, 0, ivs, 0, 0);
+    memcpy(sav + 0x40000 + 0xCF2C + 4, box, sizeof box);
+    CHECK(trade_apply(sav, 0x80000, 0, 0, 0, 64, 65, &ability) == TRADE_OK);
+    CHECK(pv_read32(sav + 0xCF2C - 0x14) == 0);
+    CHECK(pv_read32(sav + 0x40000 + 0xCF2C - 0x14) == 9);
+    CHECK(gen4_crc_ok(sav + 0x40000, 0xCF2C, 0x14));
+    CHECK(gen4_crc_ok(sav + 0x40000 + 0xCF2C, 0x121E4, 0x14));
+    memcpy(box, sav + 0x40000 + 0xCF2C + 4, sizeof box);
+    CHECK(pv_decrypt45(box, 136));
+    CHECK(pv_read16(box + 8) == 65);
+
+    /* Diamond party Graveler. Current HP stays at a quarter of the new maximum. */
+    memset(sav, 0, 0x80000);
+    mark_gen4(sav, 0xC100, 0xC100, 0x121E0);
+    fill_pk45(party, 236, 1, 75, 1000, 1, 0, 0, 20);
+    retouch45(party, 236, 69, 0, 10, 0, 0, ivs, 10, 40);
+    sav[0x94] = 1;
+    memcpy(sav + 0x98, party, sizeof party);
+    CHECK(trade_apply(sav, 0x80000, 1, 0, 0, 75, 76, &ability) == TRADE_OK);
+    CHECK(gen4_crc_ok(sav, 0xC100, 0x14));
+    CHECK(pv_read32(sav + 0xC100 - 0x14) == 5);
+    CHECK(pv_read32(sav + 0xC100 + 0x121E0 - 0x14) == 4);
+    memcpy(party, sav + 0x98, sizeof party);
+    CHECK(pv_decrypt45(party, 236));
+    CHECK(pv_read16(party + 8) == 76);
+    memset(&view, 0, sizeof view);
+    view.species = 76;
+    view.ivs = ivs;
+    view.nature = 0;
+    view.level = party[0x8C];
+    mon_battle_stats(&view, stats);
+    cur = (int)((10u * stats[0]) / 40u);
+    if (cur < 1)
+        cur = 1;
+    CHECK(pv_read16(party + 0x90) == stats[0]);
+    CHECK(pv_read16(party + 0x8E) == (uint16_t)cur);
+    dex_clear(dex);
+    CHECK(save_read(dex, "Diamond", sav, 0x80000));
+    CHECK(strcmp(dex->saves[0].game, "D/P") == 0);
+    CHECK(dex->mons[0].species == 76 && (dex->mons[0].flags & MON_PARTY));
+
+    /* HeartGold boxes are a full 0x1000 apart, and the footer is shorter. */
+    memset(sav, 0, 0x80000);
+    mark_gen4(sav, 0xF628, 0xF700, 0x12310);
+    fill_pk45(box, 136, 1, 95, 1000, 1, 0, 0, 0);
+    retouch45(box, 136, 133, 233, 10, 0, 0, ivs, 0, 0);
+    memcpy(sav + 0xF700 + 0x1000, box, sizeof box);
+    CHECK(trade_apply(sav, 0x80000, 0, 1, 0, 95, 208, &ability) == TRADE_OK);
+    CHECK(ability == 125);
+    CHECK(gen4_crc_ok(sav, 0xF628, 0x10));
+    CHECK(gen4_crc_ok(sav + 0xF700, 0x12310, 0x10));
+    memcpy(box, sav + 0xF700 + 0x1000, sizeof box);
+    CHECK(pv_decrypt45(box, 136));
+    CHECK(pv_read16(box + 8) == 208 && pv_read16(box + 0x0A) == 0);
+    CHECK(save_bit(sav + 0x12B8 + 4, 208));
+    dex_clear(dex);
+    CHECK(save_read(dex, "HeartGold", sav, 0x80000));
+    CHECK(strcmp(dex->saves[0].game, "HG/SS") == 0);
+    CHECK(dex->mons[0].species == 208 && dex->mons[0].box == 1 && dex->mons[0].slot == 0);
 
     free(older);
     free(sav);

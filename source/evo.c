@@ -33,6 +33,21 @@ const char *species_evo_how(unsigned species, int index)
     return evo_phrases[evo_phrase[evo_start[species] + index]];
 }
 
+const char *species_evo_how_gen(unsigned species, int index, int generation)
+{
+    const char *how = species_evo_how(species, index);
+    unsigned into;
+
+    if (!how[0] || generation > 4)
+        return how;
+    into = species_evo_into(species, index);
+    /* Generations 3 and 4 level Feebas up once its Beauty is high.
+       Generation 5 trades it while it holds a Prism Scale. */
+    if (species == 349 && into == 350)
+        return "High Beauty";
+    return how;
+}
+
 static int walk_family(unsigned species, int indent, const char *method,
                        EvoMember *out, int n, int cap)
 {
