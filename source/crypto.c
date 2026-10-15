@@ -216,7 +216,6 @@ uint8_t pv_level_from_exp(uint32_t exp, uint8_t growth)
     return level;
 }
 
-#ifdef HOST_TEST
 void pv_refresh_checksum45(uint8_t *data)
 {
     pv_write16(data + 6, checksum45(data));
@@ -258,4 +257,3 @@ void pv_encrypt3(uint8_t *data)
     for (i = 0; i < 48; i += 4)
         pv_write32(data + 0x20 + i, pv_read32(data + 0x20 + i) ^ key);
 }
-#endif

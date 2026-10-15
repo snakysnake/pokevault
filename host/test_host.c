@@ -1,5 +1,7 @@
 #include "crypto.h"
+#include "evo.h"
 #include "identity.h"
+#include "trade.h"
 #include "moves.h"
 #include "flavor.h"
 #include "prefs.h"
@@ -1246,6 +1248,328 @@ static void test_prefs(Dex *dex)
     CHECK(hidden_has(&again, "fat:/old/Emerald.sav"));
 }
 
+static const EvoMember *family_stage(const EvoMember *mem, int n, unsigned species)
+{
+    int i;
+    for (i = 0; i < n; i++) {
+        if (mem[i].species == species)
+            return &mem[i];
+    }
+    return NULL;
+}
+
+static void test_evo(void)
+{
+    EvoMember mem[16];
+    int n;
+    int i;
+    int species;
+    const EvoMember *stage;
+
+    n = species_family(1, mem, 16);
+    CHECK(n == 3);
+    CHECK(mem[0].species == 1 && mem[0].method == NULL && mem[0].indent == 0);
+    CHECK(mem[1].species == 2 && mem[1].indent == 2);
+    CHECK(strcmp(mem[1].method, "Level 16") == 0);
+    CHECK(mem[2].species == 3 && mem[2].indent == 4);
+    CHECK(strcmp(mem[2].method, "Level 32") == 0);
+
+    n = species_family(3, mem, 16);
+    CHECK(n == 3 && mem[0].species == 1);
+
+    CHECK(species_prevo(1) == 0);
+    CHECK(species_prevo(25) == 172);
+    CHECK(species_prevo(26) == 25);
+    CHECK(species_evo_count(133) == 7);
+    n = species_family(133, mem, 16);
+    CHECK(n == 8 && mem[0].species == 133);
+    stage = family_stage(mem, n, 134);
+    CHECK(stage && strcmp(stage->method, "Water Stone") == 0);
+    stage = family_stage(mem, n, 196);
+    CHECK(stage && strcmp(stage->method, "Friendship, day") == 0);
+    stage = family_stage(mem, n, 197);
+    CHECK(stage && strcmp(stage->method, "Friendship, night") == 0);
+    stage = family_stage(mem, n, 470);
+    CHECK(stage && strcmp(stage->method, "Moss Rock") == 0);
+    stage = family_stage(mem, n, 471);
+    CHECK(stage && strcmp(stage->method, "Ice Rock") == 0);
+    CHECK(family_stage(mem, n, 700) == NULL);
+
+    n = species_family(350, mem, 16);
+    stage = family_stage(mem, n, 350);
+    CHECK(stage && strcmp(stage->method, "Trade Prism Scale") == 0);
+    n = species_family(462, mem, 16);
+    stage = family_stage(mem, n, 462);
+    CHECK(stage && strcmp(stage->method, "Magnetic field") == 0);
+    n = species_family(292, mem, 16);
+    stage = family_stage(mem, n, 292);
+    CHECK(stage && strcmp(stage->method, "Empty party slot") == 0);
+    n = species_family(589, mem, 16);
+    stage = family_stage(mem, n, 589);
+    CHECK(stage && strcmp(stage->method, "Trade for Shelmet") == 0);
+    n = species_family(106, mem, 16);
+    CHECK(n == 4);
+    stage = family_stage(mem, n, 106);
+    CHECK(stage && strcmp(stage->method, "Level 20, Atk > Def") == 0);
+    stage = family_stage(mem, n, 237);
+    CHECK(stage && strcmp(stage->method, "Level 20, Atk = Def") == 0);
+
+    n = species_family(542, mem, 16);
+    stage = family_stage(mem, n, 542);
+    CHECK(stage && strcmp(stage->method, "Friendship") == 0);
+
+    CHECK(species_family(649, mem, 16) == 1);
+    CHECK(mem[0].species == 649 && mem[0].method == NULL);
+    CHECK(species_family(0, mem, 16) == 0);
+    CHECK(species_family(650, mem, 16) == 0);
+    CHECK(species_evo_count(700) == 0);
+
+    for (species = 1; species <= 649; species++) {
+        int seen[650];
+        memset(seen, 0, sizeof seen);
+        n = species_family((unsigned)species, mem, 16);
+        CHECK(n >= 1 && n <= 8);
+        CHECK(mem[0].method == NULL && mem[0].indent == 0);
+        CHECK(species_prevo(mem[0].species) == 0);
+        CHECK(family_stage(mem, n, (unsigned)species) != NULL);
+        for (i = 0; i < n; i++) {
+            CHECK(mem[i].species >= 1 && mem[i].species <= 649);
+            CHECK(!seen[mem[i].species]);
+            seen[mem[i].species] = 1;
+            if (i == 0)
+                continue;
+            CHECK(mem[i].method && mem[i].method[0]);
+            CHECK(species_prevo(mem[i].species) != 0);
+            CHECK(mem[i].indent == mem[i - 1].indent || mem[i].indent == mem[i - 1].indent + 2
+                  || (i >= 2 && mem[i].indent == mem[i - 2].indent));
+        }
+    }
+}
+
+static int span_ok(const uint8_t *sav, int start, int length, int mirror)
+{
+    uint16_t crc = pv_crc16_ccitt(sav + start, (size_t)length);
+    return crc == pv_read16(sav + start + length + 2) && crc == pv_read16(sav + mirror);
+}
+
+static void retouch45(uint8_t *pk, int len, uint8_t ability, uint16_t item, uint8_t friendship,
+                      uint8_t gender, uint8_t nature, uint32_t ivs, int cur_hp, int max_hp)
+{
+    CHECK(pv_decrypt45(pk, len));
+    pk[0x14] = friendship;
+    pk[0x15] = ability;
+    pk[0x40] = (uint8_t)(gender << 1);
+    pk[0x41] = nature;
+    pk[0x5F] = 21;
+    pv_write16(pk + 0x0A, item);
+    pv_write32(pk + 0x38, ivs);
+    if (len >= 220) {
+        pv_write16(pk + 0x8E, (uint16_t)cur_hp);
+        pv_write16(pk + 0x90, (uint16_t)max_hp);
+    }
+    pv_refresh_checksum45(pk);
+    pv_encrypt45(pk, len);
+}
+
+static void test_trade(Dex *dex)
+{
+    uint8_t *sav;
+    uint8_t *older;
+    uint8_t pk[220];
+    uint8_t box[136];
+    TradePath path;
+    uint8_t ability = 0;
+    const uint32_t ivs = (1u << 30) - 1u;
+    TradePath paths[4];
+    MonRef view;
+    uint16_t stats[6];
+    int cur;
+
+    CHECK(strcmp(item_name(4, 221), "King's Rock") == 0);
+    CHECK(strcmp(item_name(4, 226), "Deep Sea Tooth") == 0);
+    CHECK(strcmp(item_name(4, 227), "Deep Sea Scale") == 0);
+    CHECK(strcmp(item_name(4, 233), "Metal Coat") == 0);
+    CHECK(strcmp(item_name(4, 252), "Upgrade") == 0);
+    CHECK(strcmp(item_name(4, 322), "Electirizer") == 0);
+    CHECK(strcmp(item_name(4, 324), "Dubious Disc") == 0);
+    CHECK(strcmp(item_name(4, 325), "Reaper Cloth") == 0);
+    CHECK(strcmp(item_name(4, 537), "Prism Scale") == 0);
+    CHECK(species_trade_paths(366, paths, 4) == 2);
+    CHECK(paths[0].target == 367 && paths[0].item == 226);
+    CHECK(paths[1].target == 368 && paths[1].item == 227);
+    CHECK(species_trade_paths(64, &path, 1) == 1 && path.target == 65 && path.item == 0);
+    CHECK(!species_trade_ready(349, 0, &path));
+    CHECK(species_trade_ready(349, 537, &path) && path.target == 350 && path.item == 537);
+    CHECK(species_trade_ready(366, 227, &path) && path.target == 368);
+    CHECK(species_trade_ready(64, 20, &path) && path.target == 65 && path.item == 0);
+    CHECK(pv_is_shiny(1, 1, 0));
+    CHECK(!pv_is_shiny(9, 1, 0));
+    CHECK(pv_is_shiny(8u << 13, 1, 0));
+
+    sav = calloc(1, 0x80000);
+    older = calloc(1, 0x24000);
+    CHECK(sav && older);
+    fill_pk45(box, 136, 1, 64, 1000, 1, 0, 0, 0);
+    retouch45(box, 136, 39, 20, 200, 1, 0, ivs, 0, 0);
+    memcpy(sav + 0x400, box, sizeof box);
+    seal_gen5(sav, 0x24000, 0x8C, 0x23F34, 9);
+    fill_pk45(pk, 220, 4, 25, 1000, 1, 1, 0, 12);
+    sav[0x24000 + 0x18E04] = 1;
+    memcpy(sav + 0x24000 + 0x18E08, pk, sizeof pk);
+    seal_gen5(sav + 0x24000, 0x24000, 0x8C, 0x23F34, 1);
+    memcpy(older, sav + 0x24000, 0x24000);
+
+    CHECK(trade_apply(sav, 0x80000, 0, 0, 0, 25, 26, &ability) == TRADE_MISMATCH);
+    CHECK(pv_read32(sav + 0x23F00 + 0x8C) == 9);
+    fill_pk45(box, 136, 1, 64, 1000, 1, 0, 1, 0);
+    retouch45(box, 136, 39, 20, 200, 1, 0, ivs | (1u << 30), 0, 0);
+    memcpy(sav + 0x400, box, sizeof box);
+    seal_gen5(sav, 0x24000, 0x8C, 0x23F34, 9);
+    CHECK(trade_apply(sav, 0x80000, 0, 0, 0, 64, 65, &ability) == TRADE_EGG);
+
+    fill_pk45(box, 136, 9, 64, 1000, 1, 0, 0, 0);
+    retouch45(box, 136, 39, 20, 200, 1, 0, ivs, 0, 0);
+    memcpy(sav + 0x400, box, sizeof box);
+    seal_gen5(sav, 0x24000, 0x8C, 0x23F34, 9);
+    CHECK(trade_apply(sav, 0x80000, 0, 0, 0, 64, 65, &ability) == TRADE_OK);
+    CHECK(ability == 39);
+    CHECK(pv_read32(sav + 0x23F00 + 0x8C) == 10);
+    CHECK(span_ok(sav, 0x400, 0xFF0, 0x23F02));
+    CHECK(span_ok(sav, 0x21600, 0x4D4, 0x23F6E));
+    CHECK(pv_crc16_ccitt(sav + 0x23F00, 0x8C) == pv_read16(sav + 0x23F00 + 0x8C + 0x0E));
+    CHECK(memcmp(sav + 0x24000, older, 0x24000) == 0);
+    memcpy(box, sav + 0x400, sizeof box);
+    CHECK(pv_decrypt45(box, 136));
+    CHECK(pv_read16(box + 8) == 65);
+    CHECK(box[0x15] == 39);
+    CHECK(box[0x14] == 70);
+    CHECK(pv_read16(box + 0x0A) == 20);
+    CHECK(save_bit(sav + 0x21600 + 0x08, 65));
+    CHECK(!save_bit(sav + 0x21600 + 0x5C, 65));
+    CHECK(save_bit(sav + 0x21600 + 0x5C + 0x54, 65));
+
+    dex_clear(dex);
+    CHECK(save_read(dex, "White", sav, 0x80000));
+    CHECK(dex->mon_count == 1);
+    CHECK(dex->mons[0].species == 65);
+    CHECK(dex->mons[0].ability == 39);
+    CHECK(dex->mons[0].item == 20);
+    CHECK(dex->mons[0].gender == 1);
+    CHECK(save_bit(dex->saves[0].dex_caught, 65));
+    CHECK(save_bit(dex->saves[0].dex_seen, 65));
+
+    /* Feebas needs the Prism Scale. A wrong target does not touch the save. */
+    fill_pk45(box, 136, 1, 349, 1000, 1, 0, 0, 0);
+    retouch45(box, 136, 91, 0, 40, 0, 3, ivs, 0, 0);
+    memcpy(sav + 0x400, box, sizeof box);
+    seal_gen5(sav, 0x24000, 0x8C, 0x23F34, 3);
+    CHECK(trade_apply(sav, 0x80000, 0, 0, 0, 349, 350, &ability) == TRADE_NO);
+    CHECK(pv_read32(sav + 0x23F00 + 0x8C) == 3);
+    retouch45(box, 136, 91, 537, 40, 0, 3, ivs, 0, 0);
+    memcpy(sav + 0x400, box, sizeof box);
+    seal_gen5(sav, 0x24000, 0x8C, 0x23F34, 3);
+    CHECK(trade_apply(sav, 0x80000, 0, 0, 0, 349, 350, &ability) == TRADE_OK);
+    memcpy(box, sav + 0x400, sizeof box);
+    CHECK(pv_decrypt45(box, 136));
+    CHECK(pv_read16(box + 8) == 350);
+    CHECK(box[0x15] == 56);
+    CHECK(pv_read16(box + 0x0A) == 0);
+    CHECK(box[0x14] == 70);
+
+    fill_pk45(box, 136, 1, 366, 1000, 1, 0, 0, 0);
+    retouch45(box, 136, 75, 227, 10, 0, 0, ivs, 0, 0);
+    memcpy(sav + 0x400, box, sizeof box);
+    seal_gen5(sav, 0x24000, 0x8C, 0x23F34, 3);
+    CHECK(trade_apply(sav, 0x80000, 0, 0, 0, 366, 367, &ability) == TRADE_NO);
+    CHECK(trade_apply(sav, 0x80000, 0, 0, 0, 366, 368, &ability) == TRADE_OK);
+    memcpy(box, sav + 0x400, sizeof box);
+    CHECK(pv_decrypt45(box, 136));
+    CHECK(pv_read16(box + 8) == 368 && box[0x15] == 33);
+
+    fill_pk45(box, 136, 1, 125, 1000, 1, 0, 0, 0);
+    retouch45(box, 136, 9, 322, 10, 0, 0, ivs, 0, 0);
+    memcpy(sav + 0x400, box, sizeof box);
+    seal_gen5(sav, 0x24000, 0x8C, 0x23F34, 3);
+    CHECK(trade_apply(sav, 0x80000, 0, 0, 0, 125, 466, &ability) == TRADE_OK);
+    CHECK(ability == 78);
+
+    fill_pk45(box, 136, 8u << 13, 95, 1000, 1, 0, 0, 0);
+    retouch45(box, 136, 133, 233, 10, 0, 0, ivs, 0, 0);
+    memcpy(sav + 0x400, box, sizeof box);
+    seal_gen5(sav, 0x24000, 0x8C, 0x23F34, 3);
+    CHECK(trade_apply(sav, 0x80000, 0, 0, 0, 95, 208, &ability) == TRADE_OK);
+    CHECK(ability == 125);
+    CHECK(save_bit(sav + 0x21600 + 0x5C + 2 * 0x54, 208));
+    CHECK(!save_bit(sav + 0x21600 + 0x5C, 208));
+
+    fill_pk45(box, 136, 1, 356, 1000, 1, 0, 0, 0);
+    retouch45(box, 136, 46, 325, 200, 0, 0, ivs, 0, 0);
+    memcpy(sav + 0x400, box, sizeof box);
+    seal_gen5(sav, 0x24000, 0x8C, 0x23F34, 3);
+    CHECK(trade_apply(sav, 0x80000, 0, 0, 0, 356, 477, &ability) == TRADE_OK);
+    memcpy(box, sav + 0x400, sizeof box);
+    CHECK(pv_decrypt45(box, 136));
+    CHECK(pv_read16(box + 8) == 477 && box[0x14] == 35);
+
+    fill_pk45(box, 136, 1, 588, 1000, 1, 0, 0, 0);
+    retouch45(box, 136, 68, 20, 10, 0, 0, ivs, 0, 0);
+    memcpy(sav + 0x400, box, sizeof box);
+    seal_gen5(sav, 0x24000, 0x8C, 0x23F34, 3);
+    CHECK(trade_apply(sav, 0x80000, 0, 0, 0, 588, 589, &ability) == TRADE_OK);
+    memcpy(box, sav + 0x400, sizeof box);
+    CHECK(pv_decrypt45(box, 136));
+    CHECK(pv_read16(box + 8) == 589 && pv_read16(box + 0x0A) == 20);
+
+    /* Party Kadabra. Current HP stays at a quarter of the new maximum. */
+    fill_pk45(pk, 220, 1, 64, 1000, 1, 0, 0, 16);
+    retouch45(pk, 220, 28, 0, 10, 0, 0, ivs, 10, 40);
+    memset(sav, 0, 0x80000);
+    sav[0x18E04] = 1;
+    memcpy(sav + 0x18E08, pk, sizeof pk);
+    seal_gen5(sav, 0x24000, 0x8C, 0x23F34, 4);
+    CHECK(trade_apply(sav, 0x80000, 1, 0, 0, 64, 65, &ability) == TRADE_OK);
+    CHECK(span_ok(sav, 0x18E00, 0x534, 0x23F34));
+    memcpy(pk, sav + 0x18E08, sizeof pk);
+    CHECK(pv_decrypt45(pk, 220));
+    CHECK(pv_read16(pk + 8) == 65);
+    memset(&view, 0, sizeof view);
+    view.species = 65;
+    view.ivs = ivs;
+    view.nature = 0;
+    view.level = pk[0x8C];
+    mon_battle_stats(&view, stats);
+    cur = (int)((10u * stats[0]) / 40u);
+    if (cur < 1)
+        cur = 1;
+    CHECK(pv_read16(pk + 0x90) == stats[0]);
+    CHECK(pv_read16(pk + 0x8E) == (uint16_t)cur);
+    CHECK(pv_read16(pk + 0x92) == stats[1]);
+    CHECK(pv_read16(pk + 0x96) == stats[5]);
+    CHECK(pv_read16(pk + 0x98) == stats[3]);
+    CHECK(pv_read16(pk + 0x9A) == stats[4]);
+
+    /* Black 2 keeps the Pokédex in a different block. */
+    memset(sav, 0, 0x80000);
+    fill_pk45(box, 136, 1, 525, 1000, 1, 0, 0, 0);
+    retouch45(box, 136, 5, 0, 10, 0, 0, ivs, 0, 0);
+    memcpy(sav + 0x400 + 0x1000 + 136, box, sizeof box);
+    seal_gen5(sav, 0x26000, 0x94, 0x25F34, 2);
+    CHECK(trade_apply(sav, 0x80000, 0, 1, 1, 525, 526, &ability) == TRADE_OK);
+    CHECK(pv_read32(sav + 0x25F00 + 0x94) == 3);
+    CHECK(span_ok(sav, 0x1400, 0xFF0, 0x25F04));
+    CHECK(span_ok(sav, 0x21400, 0x4DC, 0x25F6C));
+    CHECK(save_bit(sav + 0x21400 + 0x08, 526));
+    dex_clear(dex);
+    CHECK(save_read(dex, "Black2", sav, 0x80000));
+    CHECK(strcmp(dex->saves[0].game, "B2/W2") == 0);
+    CHECK(dex->mons[0].species == 526 && dex->mons[0].box == 1 && dex->mons[0].slot == 1);
+
+    CHECK(trade_apply(sav, 32, 0, 0, 0, 64, 65, &ability) == TRADE_BAD);
+
+    free(older);
+    free(sav);
+}
+
 static void test_rejects_garbage(Dex *dex)
 {
     uint8_t junk[128];
@@ -1278,6 +1602,8 @@ int main(void)
     test_japanese(&dex);
     test_cards(&dex);
     test_prefs(&dex);
+    test_evo();
+    test_trade(&dex);
     test_rejects_garbage(&dex);
     if (fails) {
         printf("%d checks failed\n", fails);

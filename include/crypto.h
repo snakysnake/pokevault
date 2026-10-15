@@ -21,11 +21,9 @@ bool pv_decrypt3(uint8_t *data);
 uint8_t pv_level_from_exp(uint32_t exp, uint8_t growth);
 bool pv_is_shiny(uint32_t pid, uint16_t tid, uint16_t sid);
 
-#ifdef HOST_TEST
 void pv_refresh_checksum45(uint8_t *data);
 void pv_refresh_checksum3(uint8_t *data);
 void pv_encrypt45(uint8_t *data, int len);
 void pv_encrypt3(uint8_t *data);
-#endif
 
 #endif

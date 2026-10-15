@@ -11,7 +11,7 @@ ROOT := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))
 # These set the information text in the nds file
 GAME_TITLE     := pokevault
 GAME_SUBTITLE1 := Save reader
-GAME_SUBTITLE2 := Read only
+GAME_SUBTITLE2 := Gen 5 trades
 
 include $(DEVKITARM)/ds_rules
 

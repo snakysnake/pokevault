@@ -1,3 +1,4 @@
+#include "evo.h"
 #include "flavor.h"
 #include "identity.h"
 #include "moves.h"
@@ -7,6 +8,7 @@
 #include "species.h"
 #include "sprites.h"
 #include "stats.h"
+#include "trade.h"
 #include "types.h"
 
 #include <nds.h>
@@ -64,7 +66,8 @@ enum {
     CARD_STATS = 0,
     CARD_ENTRY = 1,
     CARD_WEAK = 2,
-    CARD_PAGES = 3,
+    CARD_EVO = 3,
+    CARD_PAGES = 4,
     /* Idle long enough to read as "put the DS down", then a few seconds on each Pokémon. */
     SAVER_IDLE = 20 * 60,
     SAVER_HOLD = 4 * 60
@@ -86,6 +89,10 @@ static int dex_scroll;
 static int copy_cursor;
 static int copy_scroll;
 static int copy_page;
+/* Species opened from the evolution line. 0 follows the dex list. */
+static uint16_t focus_species;
+static uint16_t evo_anchor;
+static int evo_cursor;
 static int move_cursor;
 static int move_row0 = 10;
 static int page = PAGE_HOME;
@@ -93,6 +100,9 @@ static int home_cursor;
 static int game_cursor;
 static int game_scroll;
 static int hide_ask;
+static int trade_ask;
+static uint16_t trade_target;
+static char trade_error[40];
 static int view = VIEW_DEX;
 static int filter_caught;
 static int filter_seen;
@@ -1248,7 +1258,7 @@ static void draw_mon_title(const MonRef *mon)
 
 static void draw_card_pager(int which)
 {
-    static const char *const names[CARD_PAGES] = {"Stats", "Entry", "Weak"};
+    static const char *const names[CARD_PAGES] = {"Stats", "Entry", "Weak", "Evo"};
     const char *name = names[which >= 0 && which < CARD_PAGES ? which : 0];
     int len = text_len(name);
     int start = (COLS - len) / 2;
@@ -3002,6 +3012,8 @@ static void open_boxed(const Dex *dex)
     page = PAGE_DEX;
     view = VIEW_COPIES;
     copy_page = CARD_STATS;
+    focus_species = 0;
+    evo_anchor = 0;
     select_species(mon->species);
     copy_cursor = 0;
     copy_scroll = 0;
@@ -3084,6 +3096,276 @@ static void draw_find(void)
     fputs("Y close", stdout);
 }
 
+static const SpeciesRow *shown_row(void)
+{
+    if (focus_species >= 1 && focus_species <= NATIONAL_DEX)
+        return &catalog[focus_species - 1];
+    if (dex_cursor < 0 || dex_cursor >= row_count)
+        return NULL;
+    return &rows[dex_cursor];
+}
+
+static int load_family(unsigned species, EvoMember *mem, int cap)
+{
+    int n = species_family(species, mem, cap);
+    int i;
+
+    if (evo_anchor != species) {
+        evo_anchor = (uint16_t)species;
+        evo_cursor = 0;
+        for (i = 0; i < n; i++) {
+            if (mem[i].species == species) {
+                evo_cursor = i;
+                break;
+            }
+        }
+    }
+    if (n < 1)
+        evo_cursor = 0;
+    else if (evo_cursor < 0)
+        evo_cursor = 0;
+    else if (evo_cursor >= n)
+        evo_cursor = n - 1;
+    return n;
+}
+
+/* Screen row of a stage's name. A method, when there is one, sits on the row above. */
+static int family_species_row(const EvoMember *mem, int index)
+{
+    int row = 3;
+    int i;
+
+    for (i = 0; i <= index; i++) {
+        if (mem[i].method)
+            row++;
+        if (i == index)
+            return row;
+        row++;
+    }
+    return row;
+}
+
+static int family_at_row(const EvoMember *mem, int n, int screen_row)
+{
+    int i;
+
+    for (i = 0; i < n; i++) {
+        int species_row = family_species_row(mem, i);
+        int method_row = mem[i].method ? species_row - 1 : -1;
+        if (screen_row == species_row || screen_row == method_row)
+            return i;
+    }
+    return -1;
+}
+
+static void put_span(int row, int col, int ink, const char *text)
+{
+    int width;
+    int n = 0;
+
+    if (row < 0 || row >= ROWS)
+        return;
+    width = line_cols(row);
+    if (col < 0 || col >= width)
+        return;
+    at(row, col);
+    use_ink(ink);
+    if (!text)
+        return;
+    while (text[n] && col + n < width) {
+        putchar((unsigned char)text[n]);
+        n++;
+    }
+}
+
+static int evo_ink(const Dex *dex, unsigned species, int selected)
+{
+    int living = 0;
+    int shiny = 0;
+
+    if (selected)
+        return INK_GOLD;
+    if (species >= 1 && species <= NATIONAL_DEX)
+        living_marks(dex, &catalog[species - 1], &living, &shiny);
+    if (shiny)
+        return INK_SHINY;
+    if (living > 0)
+        return INK_CREAM;
+    return INK_MUTED;
+}
+
+static int gen5_save(const Dex *dex, const MonRef *mon)
+{
+    const char *game;
+    if (!dex || !mon || mon->save_index >= dex->save_count)
+        return 0;
+    game = dex->saves[mon->save_index].game;
+    return strcmp(game, "B/W") == 0 || strcmp(game, "B2/W2") == 0;
+}
+
+/* "Y trade" when this copy can go out and come back evolved.
+   "Needs ..." when a held item is the missing piece. */
+static int trade_hint(const Dex *dex, const MonRef *mon, char *out, int cap)
+{
+    TradePath ready;
+    TradePath paths[4];
+    int n;
+    const char *item;
+
+    if (!out || cap < 1)
+        return 0;
+    out[0] = 0;
+    if (!mon || (mon->flags & MON_EGG))
+        return 0;
+    n = species_trade_paths(mon->species, paths, 4);
+    if (n <= 0)
+        return 0;
+    if (!gen5_save(dex, mon)) {
+        snprintf(out, (size_t)cap, "Gen 5 save");
+        return 1;
+    }
+    if (species_trade_ready(mon->species, mon->item, &ready)) {
+        snprintf(out, (size_t)cap, "Y trade");
+        return 1;
+    }
+    if (n > 1) {
+        snprintf(out, (size_t)cap, "Needs a sea item");
+        return 1;
+    }
+    item = item_name(4, paths[0].item);
+    if (!item[0])
+        item = "item";
+    snprintf(out, (size_t)cap, "Needs %s", item);
+    return 1;
+}
+
+static void draw_copy_evo(const Dex *dex, const MonRef *mon, unsigned species, unsigned form, int shiny)
+{
+    EvoMember mem[16];
+    int n;
+    int i;
+    int last = 3;
+
+    if (mon)
+        draw_mon_title(mon);
+    else
+        draw_species_title(species, form, shiny);
+    n = load_family(species, mem, 16);
+    if (n <= 1) {
+        at(3, 0);
+        use_ink(INK_MUTED);
+        fputs("Does not evolve.", stdout);
+        return;
+    }
+    for (i = 0; i < n; i++) {
+        char label[28];
+        int row = family_species_row(mem, i);
+        if (mem[i].method && row - 1 <= 19)
+            put_span(row - 1, mem[i].indent, INK_MUTED, mem[i].method);
+        if (row > 19)
+            break;
+        snprintf(label, sizeof label, "#%03u %s", mem[i].species, species_name(mem[i].species));
+        put_span(row, mem[i].indent, evo_ink(dex, mem[i].species, i == evo_cursor), label);
+        last = row;
+    }
+    if (last < 20) {
+        char hint[28];
+        at(20, 0);
+        use_ink(INK_MUTED);
+        fputs("A open", stdout);
+        if (trade_hint(dex, mon, hint, (int)sizeof hint))
+            put_span(20, 8, INK_MUTED, hint);
+    }
+}
+
+static void draw_trade_confirm(const MonRef *mon)
+{
+    TradePath path;
+    char line[40];
+    const char *item;
+
+    if (!mon || !species_trade_ready(mon->species, mon->item, &path) || path.target != trade_target) {
+        trade_ask = 0;
+        return;
+    }
+    snprintf(line, sizeof line, "Trade this %s?", species_name(mon->species));
+    put_span(4, 0, INK_CREAM, line);
+    put_span(10, 0, INK_MUTED, "Comes back as");
+    put_span(11, 0, INK_GOLD, species_name(path.target));
+    if (path.item) {
+        item = item_name(4, path.item);
+        snprintf(line, sizeof line, "Uses its %s.", item[0] ? item : "item");
+        put_span(13, 0, INK_MUTED, line);
+    }
+    put_span(15, 0, INK_MUTED, "A .bak is written first.");
+    if (trade_error[0])
+        put_span(17, 0, INK_GOLD, trade_error);
+    put_span(21, 0, INK_MUTED, "A trade");
+    put_span(21, COLS - 8, INK_MUTED, "B cancel");
+}
+
+/* 1 when the line moved or a stage opened, 2 when the key was used and nothing changed. */
+static int touch_row(uint32_t hit);
+
+static int evo_steer(const Dex *dex, uint32_t hit, uint32_t down)
+{
+    EvoMember mem[16];
+    const SpeciesRow *row;
+    int n;
+
+    if (view != VIEW_COPIES || copy_page != CARD_EVO)
+        return 0;
+    row = shown_row();
+    if (!row)
+        return 0;
+    n = load_family(row->species, mem, 16);
+    if (n <= 1)
+        return 0;
+    if (hit & KEY_TOUCH) {
+        int found = family_at_row(mem, n, touch_row(hit));
+        if (found >= 0 && found != evo_cursor) {
+            evo_cursor = found;
+            return 1;
+        }
+        if (found >= 0 && mem[found].species != row->species) {
+            focus_species = mem[found].species;
+            evo_anchor = 0;
+            copy_cursor = 0;
+            copy_scroll = 0;
+            return 1;
+        }
+        if (found >= 0)
+            return 2;
+    }
+    if (hit & KEY_A) {
+        if (evo_cursor >= 0 && evo_cursor < n && mem[evo_cursor].species != row->species) {
+            focus_species = mem[evo_cursor].species;
+            evo_anchor = 0;
+            copy_cursor = 0;
+            copy_scroll = 0;
+            return 1;
+        }
+        return 2;
+    }
+    if (down & (KEY_UP | KEY_DOWN)) {
+        int next = evo_cursor;
+        if (down & KEY_UP)
+            next--;
+        if (down & KEY_DOWN)
+            next++;
+        if (next < 0)
+            next = 0;
+        if (next >= n)
+            next = n - 1;
+        if (next != evo_cursor) {
+            evo_cursor = next;
+            return 1;
+        }
+        return 2;
+    }
+    return 0;
+}
+
 static void draw(const Dex *dex)
 {
     int copies = 0;
@@ -3126,9 +3408,11 @@ static void draw(const Dex *dex)
         sprites_hide();
         return;
     }
-    if ((view == VIEW_COPIES || view == VIEW_PICK || view == VIEW_MOVE)
-        && dex_cursor >= 0 && dex_cursor < row_count)
-        copies = enabled_stored(dex, &rows[dex_cursor]);
+    if (view == VIEW_COPIES || view == VIEW_PICK || view == VIEW_MOVE) {
+        const SpeciesRow *shown = shown_row();
+        if (shown)
+            copies = enabled_stored(dex, shown);
+    }
     if (view == VIEW_COPIES || view == VIEW_PICK || view == VIEW_MOVE)
         clamp_cursor(&copy_cursor, &copy_scroll, copies, COPY_PAGE);
     else if (view == VIEW_FILTER)
@@ -3141,8 +3425,8 @@ static void draw(const Dex *dex)
     use_ink(INK_CREAM);
     if (view == VIEW_FILTER)
         draw_filter(dex);
-    else if (view == VIEW_COPIES || view == VIEW_PICK || view == VIEW_MOVE)
-        draw_copy_list(dex, &rows[dex_cursor]);
+    else if ((view == VIEW_COPIES || view == VIEW_PICK || view == VIEW_MOVE) && shown_row())
+        draw_copy_list(dex, shown_row());
     else
         draw_dex_list(dex);
 
@@ -3159,8 +3443,8 @@ static void draw(const Dex *dex)
         sprites_hide();
         return;
     }
-    if (view == VIEW_COPIES || view == VIEW_PICK || view == VIEW_MOVE) {
-        const SpeciesRow *row = &rows[dex_cursor];
+    if ((view == VIEW_COPIES || view == VIEW_PICK || view == VIEW_MOVE) && shown_row()) {
+        const SpeciesRow *row = shown_row();
         const MonRef *mon = copies > 0 ? enabled_mon(dex, row, copy_cursor) : NULL;
         if (view == VIEW_PICK && copy_page != CARD_STATS)
             view = VIEW_COPIES;
@@ -3168,7 +3452,21 @@ static void draw(const Dex *dex)
                                   || move_cursor < 0 || move_cursor > 3
                                   || mon->moves[move_cursor] == 0))
             view = VIEW_COPIES;
-        if (view == VIEW_MOVE) {
+        if (trade_ask) {
+            draw_trade_confirm(mon);
+            if (!trade_ask) {
+                draw_copy_evo(dex, mon, mon ? mon->species : row->species,
+                              mon ? mon->form : 0, mon && (mon->flags & MON_SHINY));
+                draw_card_pager(copy_page);
+                if (mon)
+                    sprites_show(mon->species, (mon->flags & MON_SHINY) != 0, 0);
+                else
+                    sprites_show(row->species, 0, 0);
+            } else if (mon)
+                sprites_show(mon->species, (mon->flags & MON_SHINY) != 0, (mon->flags & MON_EGG) != 0);
+            else
+                sprites_show(row->species, 0, 0);
+        } else if (view == VIEW_MOVE) {
             int index = 0;
             int total = 0;
             int i;
@@ -3186,6 +3484,8 @@ static void draw(const Dex *dex)
                 draw_copy_entry(mon, mon->species, mon->form, (mon->flags & MON_SHINY) != 0);
             else if (copy_page == CARD_WEAK)
                 draw_copy_weak(mon, mon->species, mon->form, (mon->flags & MON_SHINY) != 0);
+            else if (copy_page == CARD_EVO)
+                draw_copy_evo(dex, mon, mon->species, mon->form, (mon->flags & MON_SHINY) != 0);
             else
                 draw_copy_card(dex, mon, view == VIEW_PICK);
             draw_card_pager(copy_page);
@@ -3195,6 +3495,8 @@ static void draw(const Dex *dex)
                 draw_copy_entry(NULL, row->species, 0, 0);
             else if (copy_page == CARD_WEAK)
                 draw_copy_weak(NULL, row->species, 0, 0);
+            else if (copy_page == CARD_EVO)
+                draw_copy_evo(dex, NULL, row->species, 0, 0);
             else
                 draw_uncaught_stats(row->species);
             draw_card_pager(copy_page);
@@ -3236,7 +3538,7 @@ void ui_status(const char *msg)
     use_ink(INK_CREAM);
     printf("%s\n\n", msg ? msg : "");
     use_ink(INK_MUTED);
-    fputs("Read only.\nSaves are not modified.", stdout);
+    fputs("Scanning does not write.", stdout);
     sprites_hide();
     swiWaitForVBlank();
     sprites_flush();
@@ -3245,13 +3547,104 @@ void ui_status(const char *msg)
 
 static const MonRef *current_copy(const Dex *dex)
 {
+    const SpeciesRow *row = shown_row();
     int total;
-    if (dex_cursor < 0 || dex_cursor >= row_count)
+    if (!row)
         return NULL;
-    total = enabled_stored(dex, &rows[dex_cursor]);
+    total = enabled_stored(dex, row);
     if (total <= 0)
         return NULL;
-    return enabled_mon(dex, &rows[dex_cursor], copy_cursor);
+    return enabled_mon(dex, row, copy_cursor);
+}
+
+static MonRef *current_copy_mut(Dex *dex)
+{
+    const SpeciesRow *row = shown_row();
+    int n = 0;
+    int i;
+    if (!row)
+        return NULL;
+    for (i = 0; i < row->count; i++) {
+        MonRef *mon = &dex->mons[row->first + i];
+        if (!version_on(dex, mon->save_index))
+            continue;
+        if (n == copy_cursor)
+            return mon;
+        n++;
+    }
+    return NULL;
+}
+
+static const char *trade_status(int rc)
+{
+    if (rc == TRADE_IO)
+        return "Could not write the save.";
+    if (rc == TRADE_BAD)
+        return "That save did not check out.";
+    if (rc == TRADE_MISMATCH)
+        return "The slot changed. Not saved.";
+    if (rc == TRADE_EGG)
+        return "Eggs are not traded.";
+    return "It does not trade like this.";
+}
+
+static void finish_trade(Dex *dex)
+{
+    MonRef *mon = current_copy_mut(dex);
+    uint8_t save_index;
+    uint8_t box;
+    uint8_t slot;
+    int party;
+    uint16_t target;
+    int rc;
+
+    if (!mon) {
+        trade_ask = 0;
+        return;
+    }
+    save_index = mon->save_index;
+    box = mon->box;
+    slot = mon->slot;
+    party = (mon->flags & MON_PARTY) != 0;
+    target = trade_target;
+    consoleSelect(&bottom_console);
+    consoleClear();
+    put_span(10, 0, INK_CREAM, "Trading...");
+    swiWaitForVBlank();
+    sprites_flush();
+    music_pump();
+    rc = trade_commit(dex, mon, target);
+    if (rc != TRADE_OK) {
+        snprintf(trade_error, sizeof trade_error, "%s", trade_status(rc));
+        return;
+    }
+    trade_ask = 0;
+    trade_error[0] = 0;
+    dex_sort(dex, 1);
+    refresh_rows(dex);
+    evo_anchor = 0;
+    focus_species = 0;
+    if (species_listed(target)) {
+        int total;
+        int i;
+        view = VIEW_COPIES;
+        copy_page = CARD_EVO;
+        select_species(target);
+        copy_cursor = 0;
+        total = enabled_stored(dex, &rows[dex_cursor]);
+        for (i = 0; i < total; i++) {
+            const MonRef *got = enabled_mon(dex, &rows[dex_cursor], i);
+            if (got && got->save_index == save_index && got->box == box && got->slot == slot
+                && ((got->flags & MON_PARTY) != 0) == party) {
+                copy_cursor = i;
+                break;
+            }
+        }
+        clamp_cursor(&copy_cursor, &copy_scroll, total, COPY_PAGE);
+    } else {
+        view = VIEW_DEX;
+        clamp_cursor(&dex_cursor, &dex_scroll, row_count, DEX_PAGE);
+    }
 }
 
 static int first_move_slot(const MonRef *mon)
@@ -3360,6 +3753,8 @@ void ui_run(Dex *dex)
     game_cursor = 0;
     game_scroll = 0;
     hide_ask = 0;
+    trade_ask = 0;
+    trade_error[0] = 0;
     view = VIEW_DEX;
     dex_cursor = 0;
     dex_scroll = 0;
@@ -3371,6 +3766,7 @@ void ui_run(Dex *dex)
 
     while (1) {
         int dirty = 0;
+        int steered = 0;
         uint32_t down;
         uint32_t hit;
         uint32_t held;
@@ -3553,6 +3949,17 @@ void ui_run(Dex *dex)
                     dirty = 1;
                 }
             }
+        } else if (trade_ask && view == VIEW_COPIES) {
+            if (hit & KEY_A) {
+                finish_trade(dex);
+                music_click();
+                dirty = 1;
+            } else if (hit & KEY_B) {
+                trade_ask = 0;
+                trade_error[0] = 0;
+                music_click();
+                dirty = 1;
+            }
         } else if (view == VIEW_FILTER) {
             if (hit & KEY_X || (hit & KEY_B && filter_pane == PANE_ROOT)) {
                 uint16_t species = 0;
@@ -3711,6 +4118,10 @@ void ui_run(Dex *dex)
                 dirty = 1;
             }
         } else if (hit & KEY_B && view == VIEW_COPIES) {
+            if (focus_species && species_listed(focus_species))
+                select_species(focus_species);
+            focus_species = 0;
+            evo_anchor = 0;
             if (from_box) {
                 from_box = 0;
                 boxes_on = 1;
@@ -3735,6 +4146,8 @@ void ui_run(Dex *dex)
             dirty = 1;
         } else if (hit & KEY_A && view == VIEW_DEX && row_count > 0) {
             view = VIEW_COPIES;
+            focus_species = 0;
+            evo_anchor = 0;
             copy_cursor = 0;
             copy_scroll = 0;
             copy_page = CARD_STATS;
@@ -3751,17 +4164,46 @@ void ui_run(Dex *dex)
             dirty = 1;
         } else if ((view == VIEW_COPIES || view == VIEW_PICK) && row_count > 0
                    && (down & (KEY_LEFT | KEY_RIGHT))) {
-            int before = dex_cursor;
+            const SpeciesRow *shown = shown_row();
+            uint16_t was = shown ? shown->species : 0;
+            int before;
+            if (focus_species) {
+                if (species_listed(focus_species))
+                    select_species(focus_species);
+                focus_species = 0;
+                evo_anchor = 0;
+            }
+            before = dex_cursor;
             if (down & KEY_LEFT)
                 dex_cursor--;
             if (down & KEY_RIGHT)
                 dex_cursor++;
             clamp_cursor(&dex_cursor, &dex_scroll, row_count, DEX_PAGE);
-            if (dex_cursor != before) {
+            shown = shown_row();
+            if (dex_cursor != before || (shown && shown->species != was)) {
                 view = VIEW_COPIES;
                 move_cursor = -1;
-                copy_cursor = 0;
-                copy_scroll = 0;
+                if (dex_cursor != before) {
+                    copy_cursor = 0;
+                    copy_scroll = 0;
+                }
+                music_click();
+                dirty = 1;
+            }
+        } else if (view == VIEW_COPIES && copy_page == CARD_EVO && (hit & KEY_Y)) {
+            const MonRef *held = current_copy(dex);
+            TradePath path;
+            if (held && (held->flags & MON_EGG) == 0 && gen5_save(dex, held)
+                && species_trade_ready(held->species, held->item, &path)) {
+                trade_target = path.target;
+                trade_error[0] = 0;
+                trade_ask = 1;
+                music_click();
+                dirty = 1;
+            }
+        } else if (view == VIEW_COPIES && copy_page == CARD_EVO
+                   && (steered = evo_steer(dex, hit, down)) != 0) {
+            if (steered == 1) {
                 music_click();
                 dirty = 1;
             }
@@ -3770,7 +4212,8 @@ void ui_run(Dex *dex)
             int before;
             int after;
             if (view == VIEW_COPIES) {
-                int total = enabled_stored(dex, &rows[dex_cursor]);
+                const SpeciesRow *row = shown_row();
+                int total = row ? enabled_stored(dex, row) : 0;
                 before = copy_cursor;
                 nudge(&copy_cursor, total, COPY_PAGE, down & ~(KEY_L | KEY_R | KEY_LEFT | KEY_RIGHT));
                 clamp_cursor(&copy_cursor, &copy_scroll, total, COPY_PAGE);

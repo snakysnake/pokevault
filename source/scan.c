@@ -103,7 +103,7 @@ static void read_sav(Dex *dex, const char *path, uint8_t *buf, size_t cap, ScanP
     char name[32];
     char msg[64];
 
-    /* Read-only. This app never opens a save for writing. */
+    /* The scan only reads. A trade writes later, from the evolution page. */
     f = fopen(path, "rb");
     if (!f)
         return;
