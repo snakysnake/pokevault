@@ -733,3 +733,19 @@ uint16_t species_from_gen3(uint16_t internal)
         return 0;
     return (uint16_t)((int)internal + gen3_delta[shift]);
 }
+
+uint16_t species_to_gen3(uint16_t national)
+{
+    int i;
+
+    if (national == 0 || national > 386)
+        return 0;
+    if (national < 252)
+        return national;
+    for (i = 0; i < (int)(sizeof gen3_delta); i++) {
+        int internal = 277 + i;
+        if (internal + gen3_delta[i] == (int)national)
+            return (uint16_t)internal;
+    }
+    return 0;
+}

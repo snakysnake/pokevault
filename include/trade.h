@@ -6,10 +6,11 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* One trade evolution. item is the held item that selects this path.
-   0 is a plain trade, including Karrablast and Shelmet: the partner species
-   is assumed, and nothing in this save is removed to stand in for it.
-   Generation 4 uses the same trades, except Feebas, which is not one yet. */
+/* One trade evolution. item is the held item that selects this path, in the
+   index of the generation that was asked about. 0 is a plain trade, including
+   Karrablast and Shelmet: the partner species is assumed, and nothing in this
+   save is removed to stand in for it. Generation 3 has the Hoenn trades and
+   not the ones added later. Generation 4 adds those, except Feebas. */
 typedef struct {
     uint16_t target;
     uint16_t item;
@@ -30,10 +31,16 @@ int species_trade_paths(unsigned species, TradePath *out, int cap);
 /* 1 when held selects one path in Generation 5. A plain trade ignores the item. */
 int species_trade_ready(unsigned species, unsigned held, TradePath *out);
 
-/* generation is 4 or 5. Generation 4 has no Feebas trade and no Unova trades. */
+/* generation is 3, 4, or 5. held is that generation's item index.
+   Generation 3 stops at the Hoenn dex. Generation 4 has no Feebas trade
+   and no Unova trades. */
 int species_trade_ready_gen(unsigned species, unsigned held, int generation, TradePath *out);
 
-/* Evolves the Pokémon in the active half of a Generation 4 or 5 save.
+/* item is the Generation 4 index from species_trade_paths. 0 is a plain trade.
+   On success, out->item is the index that generation stores. */
+int species_trade_in_gen(unsigned species, unsigned item, int generation, TradePath *out);
+
+/* Evolves the Pokémon in the active half of a Generation 3, 4, or 5 save.
    expect_species must still be in that slot. On success the record is the
    new species, the Pokédex bit is set, and the block checksums and save
    counter are redone. The other half is left alone. ability_out receives

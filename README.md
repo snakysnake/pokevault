@@ -8,7 +8,7 @@ Every save on the card, gathered into one National Dex.
 
 Boot it on a DS that already runs homebrew. PokeVault walks the SD card, reads the Pokémon saves it finds, and lays them out as a single Pokédex from Bulbasaur to Genesect. Generation 3, 4, and 5 share the list. Open a species and every copy you have is there: level, nature, moves, the ball it was caught in, and the game it came from. A shiny shows its shiny sprite.
 
-A trade evolution in Diamond, Pearl, Platinum, HeartGold, SoulSilver, Black, White, Black 2, or White 2 can be sent out and back from the Evo page. Feebas still needs high Beauty in Generation 4. That writes the save, after leaving a `.bak` beside it. Generation 3 saves are only read. Which games are hidden is kept in PokeVault's own settings file, and that file can hold more choices later.
+A trade evolution can be sent out and back from the Evo page, and that writes the save. Which games are hidden is kept in PokeVault's own settings file, and that file can hold more choices later.
 
 An unofficial fan tool, not affiliated with Nintendo, Game Freak, or The Pokémon Company.
 
@@ -37,6 +37,16 @@ A single Pokémon shows:
 - A sprite, including the shiny sprite
 
 The home menu also has a Games page and a Progress page. Games lists each save with the trainer name, money, play time, and Pokédex count. Open a save to see its party and boxes. Progress is a living dex across the saves left switched on. The top screen is the bar and the five regions. The bottom screen is the highlighted region's ladder: in the dex, living, shiny, seen, and never seen. A copy in a box counts as living, and also as in the dex and seen. Shiny is part of that living count. A region reads Complete once a hatched copy of each of its species is in a box. Eggs do not fill a spot. It also counts the formes you have for Unown, Shellos, Rotom, Deerling, and the other shapes the saves record.
+
+## Trade evolutions
+
+Open a Pokémon and switch to Evo. When the line says Y trade, that copy can be sent out and come back evolved. A asks to go ahead, and B cancels. If a held item is still missing, the line names it.
+
+The species in that box or party slot changes. Friendship is set to the new species' base, and a held item the evolution asks for is used up. A plain trade, such as Kadabra or Graveler, needs nothing held. The new species is marked caught in that save's Pokédex. A party Pokémon has its battle stats recalculated. Eggs are left alone.
+
+This writes that one save. The previous file is kept as a `.bak` beside it.
+
+Ruby, Sapphire, Emerald, FireRed, LeafGreen, Diamond, Pearl, Platinum, HeartGold, SoulSilver, Black, White, Black 2, and White 2 can be written this way. Feebas still needs high Beauty until Generation 5, so a Prism Scale trade is only offered on a Generation 5 save. Rhyperior, Electivire, Magmortar, Porygon-Z, and Dusknoir are Generation 4 trades. Boldore, Gurdurr, Karrablast, and Shelmet are Generation 5 trades. Karrablast and Shelmet do not take a partner out of the save.
 
 ## Saves it reads
 
@@ -118,7 +128,7 @@ A toggles a row. On Games or Pokédex, A opens that list. B goes back, and from 
 
 It runs on a DS that already boots homebrew. That includes TWiLight Menu++ on a DSi or 3DS, and a DS or DS Lite with a flashcart running TWiLight Menu or its own kernel. Copy `pokevault.nds` onto the same SD card the menu uses, usually into `roms/nds`, and launch it from the menu like any other homebrew.
 
-The saves can stay where TWiLight already put them. DS saves sit next to the ROM or in `roms/nds/saves`. GBA saves, from GBARunner, sit in `roms/gba`. PokeVault walks the card and reads those `.sav` files in place. It skips TWiLight's own `_nds` folder, and also skips `hiya`, `gm9`, `dcim`, and `private`, so the menu's files are left alone. Scanning only reads saves. A Generation 4 or 5 trade writes the one save you confirmed, and leaves a `.bak` beside it. The hidden-game choice is written to `_nds/pokevault/settings`.
+The saves can stay where TWiLight already put them. DS saves sit next to the ROM or in `roms/nds/saves`. GBA saves, from GBARunner, sit in `roms/gba`. PokeVault walks the card and reads those `.sav` files in place. It skips TWiLight's own `_nds` folder, and also skips `hiya`, `gm9`, `dcim`, and `private`, so the menu's files are left alone. Scanning only reads saves. A Generation 3, 4, or 5 trade writes the one save you confirmed, and leaves a `.bak` beside it. The hidden-game choice is written to `_nds/pokevault/settings`.
 
 Sprites and music are packed inside `pokevault.nds`. The Pokémon data comes from the SD card. TWiLight Menu tells the homebrew where that `.nds` file is, which is what those packed files need. The dex still opens if a loader omits that path. The sprites and music are just blank.
 

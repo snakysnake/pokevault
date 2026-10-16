@@ -3222,12 +3222,6 @@ static const char *method_into(unsigned species, int generation)
     return NULL;
 }
 
-static int path_in_generation(unsigned species, uint16_t item, int generation)
-{
-    TradePath ready;
-    return species_trade_ready_gen(species, item, generation, &ready);
-}
-
 /* "Y trade" when this copy can go out and come back evolved.
    "Needs ..." when a held item is the missing piece. */
 static int trade_hint(const Dex *dex, const MonRef *mon, char *out, int cap)
@@ -3236,6 +3230,7 @@ static int trade_hint(const Dex *dex, const MonRef *mon, char *out, int cap)
     TradePath paths[4];
     int n;
     int gen;
+    int gen3 = 0;
     int gen4 = 0;
     int gen5 = 0;
     int allowed = 0;
@@ -3253,23 +3248,27 @@ static int trade_hint(const Dex *dex, const MonRef *mon, char *out, int cap)
         return 0;
     gen = save_generation(dex, mon);
     for (i = 0; i < n; i++) {
-        if (path_in_generation(mon->species, paths[i].item, 4))
+        TradePath spec;
+        if (species_trade_in_gen(mon->species, paths[i].item, 3, &spec))
+            gen3 = 1;
+        if (species_trade_in_gen(mon->species, paths[i].item, 4, &spec))
             gen4 = 1;
-        if (path_in_generation(mon->species, paths[i].item, 5))
+        if (species_trade_in_gen(mon->species, paths[i].item, 5, &spec))
             gen5 = 1;
-        if ((gen == 4 || gen == 5) && path_in_generation(mon->species, paths[i].item, gen)) {
+        if ((gen == 3 || gen == 4 || gen == 5)
+            && species_trade_in_gen(mon->species, paths[i].item, gen, &spec)) {
             allowed++;
-            need = paths[i].item;
+            need = spec.item;
         }
     }
-    if (gen == 3) {
+    if (gen == 3 && !gen3) {
         /* Feebas is already at high Beauty here, so it is not waiting on a later trade. */
         if (!gen4)
             return 0;
         snprintf(out, (size_t)cap, "Gen 4 or 5");
         return 1;
     }
-    if (gen != 4 && gen != 5) {
+    if (gen != 3 && gen != 4 && gen != 5) {
         if (gen4)
             snprintf(out, (size_t)cap, "Gen 4 or 5");
         else if (gen5)
@@ -3288,7 +3287,7 @@ static int trade_hint(const Dex *dex, const MonRef *mon, char *out, int cap)
         snprintf(out, (size_t)cap, "Needs a sea item");
         return 1;
     }
-    item = item_name(4, need);
+    item = item_name(gen == 3 ? 3 : 4, need);
     if (!item[0])
         item = "item";
     snprintf(out, (size_t)cap, "Needs %s", item);
@@ -3418,7 +3417,7 @@ static void draw_trade_confirm(const Dex *dex, const MonRef *mon)
     put_span(10, 0, INK_MUTED, "Comes back as");
     put_span(11, 0, INK_GOLD, species_name(path.target));
     if (path.item) {
-        item = item_name(4, path.item);
+        item = item_name(gen == 3 ? 3 : 4, path.item);
         snprintf(line, sizeof line, "Uses its %s.", item[0] ? item : "item");
         put_span(13, 0, INK_MUTED, line);
     }

@@ -1380,6 +1380,29 @@ static void retouch45(uint8_t *pk, int len, uint8_t ability, uint16_t item, uint
     pv_encrypt45(pk, len);
 }
 
+static void retouch3(uint8_t *pk, int len, uint16_t item, uint32_t ivs, int cur_hp, int max_hp)
+{
+    CHECK(pv_decrypt3(pk));
+    pv_write16(pk + 0x22, item);
+    pv_write32(pk + 0x48, ivs);
+    if (len >= 100) {
+        pv_write16(pk + 0x56, (uint16_t)cur_hp);
+        pv_write16(pk + 0x58, (uint16_t)max_hp);
+    }
+    pv_refresh_checksum3(pk);
+    pv_encrypt3(pk);
+}
+
+static void seal_g3_at(uint8_t *slot, uint32_t counter)
+{
+    int i;
+    for (i = 0; i < 14; i++) {
+        pv_write16(slot + i * 0x1000 + 0xFF4, (uint16_t)i);
+        pv_write32(slot + i * 0x1000 + 0xFFC, counter);
+        pv_write16(slot + i * 0x1000 + 0xFF6, pv_checksum32(slot + i * 0x1000, 0xF80));
+    }
+}
+
 static void test_trade(Dex *dex)
 {
     uint8_t *sav;
@@ -1394,6 +1417,7 @@ static void test_trade(Dex *dex)
     MonRef view;
     uint16_t stats[6];
     int cur;
+    int i;
 
     CHECK(strcmp(item_name(4, 221), "King's Rock") == 0);
     CHECK(strcmp(item_name(4, 226), "Deep Sea Tooth") == 0);
@@ -1417,6 +1441,31 @@ static void test_trade(Dex *dex)
     CHECK(species_trade_ready_gen(95, 233, 4, &path) && path.target == 208);
     CHECK(species_trade_ready(366, 227, &path) && path.target == 368);
     CHECK(species_trade_ready(64, 20, &path) && path.target == 65 && path.item == 0);
+    CHECK(strcmp(item_name(3, 187), "King's Rock") == 0);
+    CHECK(strcmp(item_name(3, 192), "Deep Sea Tooth") == 0);
+    CHECK(strcmp(item_name(3, 193), "Deep Sea Scale") == 0);
+    CHECK(strcmp(item_name(3, 199), "Metal Coat") == 0);
+    CHECK(strcmp(item_name(3, 201), "Dragon Scale") == 0);
+    CHECK(strcmp(item_name(3, 218), "Upgrade") == 0);
+    for (i = 1; i <= 386; i++) {
+        uint16_t internal = species_to_gen3((uint16_t)i);
+        CHECK(internal != 0);
+        CHECK(species_from_gen3(internal) == (uint16_t)i);
+    }
+    CHECK(species_to_gen3(387) == 0);
+    CHECK(species_trade_ready_gen(64, 13, 3, &path) && path.target == 65 && path.item == 0);
+    CHECK(species_trade_ready_gen(95, 199, 3, &path) && path.target == 208 && path.item == 199);
+    CHECK(!species_trade_ready_gen(95, 233, 3, &path));
+    CHECK(species_trade_ready_gen(366, 192, 3, &path) && path.target == 367);
+    CHECK(species_trade_ready_gen(366, 193, 3, &path) && path.target == 368);
+    CHECK(!species_trade_ready_gen(366, 226, 3, &path));
+    CHECK(!species_trade_ready_gen(349, 0, 3, &path));
+    CHECK(!species_trade_ready_gen(125, 0, 3, &path));
+    CHECK(!species_trade_ready_gen(233, 0, 3, &path));
+    CHECK(species_trade_in_gen(366, 226, 3, &path) && path.item == 192 && path.target == 367);
+    CHECK(!species_trade_in_gen(125, 322, 3, &path));
+    CHECK(species_trade_in_gen(125, 322, 4, &path) && path.item == 322 && path.target == 466);
+    CHECK(species_trade_in_gen(137, 252, 3, &path) && path.item == 218 && path.target == 233);
     CHECK(pv_is_shiny(1, 1, 0));
     CHECK(!pv_is_shiny(9, 1, 0));
     CHECK(pv_is_shiny(8u << 13, 1, 0));
@@ -1462,6 +1511,10 @@ static void test_trade(Dex *dex)
     CHECK(save_bit(sav + 0x21600 + 0x08, 65));
     CHECK(!save_bit(sav + 0x21600 + 0x5C, 65));
     CHECK(save_bit(sav + 0x21600 + 0x5C + 0x54, 65));
+    CHECK(!save_bit(sav + 0x21600 + 0x1AC, 65));
+    CHECK(save_bit(sav + 0x21600 + 0x1AC + 0x54, 65));
+    /* Language byte 0 is stored as English: bit (65 - 1) * 7 + 1. */
+    CHECK(save_bit(sav + 0x21600 + 0x320, 450));
 
     dex_clear(dex);
     CHECK(save_read(dex, "White", sav, 0x80000));
@@ -1503,10 +1556,17 @@ static void test_trade(Dex *dex)
 
     fill_pk45(box, 136, 1, 125, 1000, 1, 0, 0, 0);
     retouch45(box, 136, 9, 322, 10, 0, 0, ivs, 0, 0);
+    CHECK(pv_decrypt45(box, 136));
+    box[0x17] = 7;
+    pv_refresh_checksum45(box);
+    pv_encrypt45(box, 136);
     memcpy(sav + 0x400, box, sizeof box);
     seal_gen5(sav, 0x24000, 0x8C, 0x23F34, 3);
     CHECK(trade_apply(sav, 0x80000, 0, 0, 0, 125, 466, &ability) == TRADE_OK);
     CHECK(ability == 78);
+    /* Spanish is language 7, stored at index 5. English is not set. */
+    CHECK(save_bit(sav + 0x21600 + 0x320, 3261));
+    CHECK(!save_bit(sav + 0x21600 + 0x320, 3257));
 
     fill_pk45(box, 136, 8u << 13, 95, 1000, 1, 0, 0, 0);
     retouch45(box, 136, 133, 233, 10, 0, 0, ivs, 0, 0);
@@ -1516,6 +1576,19 @@ static void test_trade(Dex *dex)
     CHECK(ability == 125);
     CHECK(save_bit(sav + 0x21600 + 0x5C + 2 * 0x54, 208));
     CHECK(!save_bit(sav + 0x21600 + 0x5C, 208));
+    CHECK(save_bit(sav + 0x21600 + 0x1AC + 2 * 0x54, 208));
+    CHECK(!save_bit(sav + 0x21600 + 0x1AC, 208));
+
+    /* A sprite already on display stays. This female Graveler is only seen. */
+    set_save_bit(sav + 0x21600 + 0x1AC, 76);
+    fill_pk45(box, 136, 9, 75, 1000, 1, 0, 0, 0);
+    retouch45(box, 136, 69, 0, 10, 1, 0, ivs, 0, 0);
+    memcpy(sav + 0x400, box, sizeof box);
+    seal_gen5(sav, 0x24000, 0x8C, 0x23F34, 3);
+    CHECK(trade_apply(sav, 0x80000, 0, 0, 0, 75, 76, &ability) == TRADE_OK);
+    CHECK(save_bit(sav + 0x21600 + 0x5C + 0x54, 76));
+    CHECK(save_bit(sav + 0x21600 + 0x1AC, 76));
+    CHECK(!save_bit(sav + 0x21600 + 0x1AC + 0x54, 76));
 
     fill_pk45(box, 136, 1, 356, 1000, 1, 0, 0, 0);
     retouch45(box, 136, 46, 325, 200, 0, 0, ivs, 0, 0);
@@ -1574,6 +1647,18 @@ static void test_trade(Dex *dex)
     CHECK(span_ok(sav, 0x1400, 0xFF0, 0x25F04));
     CHECK(span_ok(sav, 0x21400, 0x4DC, 0x25F6C));
     CHECK(save_bit(sav + 0x21400 + 0x08, 526));
+    /* pid 1 with this trainer is shiny, so the male shiny row is the one shown. */
+    CHECK(save_bit(sav + 0x21400 + 0x5C + 2 * 0x54, 526));
+    CHECK(save_bit(sav + 0x21400 + 0x1AC + 2 * 0x54, 526));
+    {
+        int i;
+        int spilled = 0;
+        for (i = 0x328; i < 0x4DC; i++) {
+            if (sav[0x21400 + i] != 0)
+                spilled = 1;
+        }
+        CHECK(!spilled);
+    }
     dex_clear(dex);
     CHECK(save_read(dex, "Black2", sav, 0x80000));
     CHECK(strcmp(dex->saves[0].game, "B2/W2") == 0);
@@ -1679,6 +1764,168 @@ static void test_trade(Dex *dex)
     CHECK(save_read(dex, "HeartGold", sav, 0x80000));
     CHECK(strcmp(dex->saves[0].game, "HG/SS") == 0);
     CHECK(dex->mons[0].species == 208 && dex->mons[0].box == 1 && dex->mons[0].slot == 0);
+
+    /* Ruby and Sapphire keep Kadabra in a box. The older slot is left alone. */
+    memset(sav, 0, 0x80000);
+    fill_pk3(box, 80, 9, 64, 1000, 1, 0, 0);
+    retouch3(box, 80, 13, ivs, 0, 0);
+    memcpy(sav + 5 * 0x1000 + 4, box, 80);
+    seal_g3_at(sav, 4);
+    seal_g3_at(sav + 0xE000, 1);
+    memcpy(older, sav + 0xE000, 0xE000);
+    CHECK(trade_apply(sav, 0x20000, 0, 0, 0, 64, 65, &ability) == TRADE_OK);
+    CHECK(ability == species_ability(65, 0));
+    CHECK(memcmp(sav + 0xE000, older, 0xE000) == 0);
+    for (i = 0; i < 14; i++) {
+        CHECK(pv_read32(sav + i * 0x1000 + 0xFFC) == 5);
+        CHECK(pv_checksum32(sav + i * 0x1000, 0xF80) == pv_read16(sav + i * 0x1000 + 0xFF6));
+    }
+    memcpy(box, sav + 5 * 0x1000 + 4, 80);
+    CHECK(pv_decrypt3(box));
+    CHECK(pv_read16(box + 0x20) == 65);
+    CHECK(box[0x29] == 70);
+    CHECK(pv_read16(box + 0x22) == 13);
+    CHECK(save_bit(sav + 0x28, 65) && save_bit(sav + 0x5C, 65));
+    dex_clear(dex);
+    CHECK(save_read(dex, "Ruby", sav, 0x20000));
+    CHECK(strcmp(dex->saves[0].game, "R/S") == 0);
+    CHECK(dex->mons[0].species == 65 && dex->mons[0].box == 0 && dex->mons[0].slot == 0);
+    CHECK(dex->mons[0].item == 13 && dex->mons[0].ability == species_ability(65, 0));
+    CHECK(save_bit(dex->saves[0].dex_caught, 65));
+
+    /* Feebas and Electabuzz are not Generation 3 trades. An egg is refused. */
+    fill_pk3(box, 80, 1, species_to_gen3(349), 1000, 1, 0, 0);
+    memcpy(sav + 5 * 0x1000 + 4 + 80, box, 80);
+    seal_g3_at(sav, pv_read32(sav + 0xFFC));
+    CHECK(trade_apply(sav, 0x20000, 0, 0, 1, 349, 350, &ability) == TRADE_NO);
+    CHECK(pv_read32(sav + 0xFFC) == 5);
+    fill_pk3(box, 80, 1, 125, 1000, 1, 0, 0);
+    memcpy(sav + 5 * 0x1000 + 4 + 80, box, 80);
+    seal_g3_at(sav, pv_read32(sav + 0xFFC));
+    CHECK(trade_apply(sav, 0x20000, 0, 0, 1, 125, 466, &ability) == TRADE_NO);
+    fill_pk3(box, 80, 1, 64, 1000, 1, 0, 0);
+    retouch3(box, 80, 0, ivs | (1u << 30), 0, 0);
+    memcpy(sav + 5 * 0x1000 + 4 + 160, box, 80);
+    seal_g3_at(sav, pv_read32(sav + 0xFFC));
+    CHECK(trade_apply(sav, 0x20000, 0, 0, 2, 64, 65, &ability) == TRADE_EGG);
+
+    /* Onix needs the Generation 3 Metal Coat, not the Generation 4 index. */
+    fill_pk3(box, 80, 1, 95, 1000, 1, 0, 0);
+    retouch3(box, 80, 233, ivs, 0, 0);
+    memcpy(sav + 5 * 0x1000 + 4 + 240, box, 80);
+    seal_g3_at(sav, pv_read32(sav + 0xFFC));
+    CHECK(trade_apply(sav, 0x20000, 0, 0, 3, 95, 208, &ability) == TRADE_NO);
+    retouch3(box, 80, 199, ivs, 0, 0);
+    memcpy(sav + 5 * 0x1000 + 4 + 240, box, 80);
+    seal_g3_at(sav, pv_read32(sav + 0xFFC));
+    CHECK(trade_apply(sav, 0x20000, 0, 0, 3, 95, 208, &ability) == TRADE_OK);
+    memcpy(box, sav + 5 * 0x1000 + 4 + 240, 80);
+    CHECK(pv_decrypt3(box));
+    CHECK(pv_read16(box + 0x20) == 208 && pv_read16(box + 0x22) == 0);
+    CHECK(save_bit(sav + 0x28, 208));
+
+    /* Clamperl is stored under its Hoenn index. Deep Sea Tooth becomes Huntail. */
+    fill_pk3(box, 80, 1, species_to_gen3(366), 1000, 1, 0, 0);
+    retouch3(box, 80, 192, ivs, 0, 0);
+    memcpy(sav + 5 * 0x1000 + 4 + 320, box, 80);
+    seal_g3_at(sav, pv_read32(sav + 0xFFC));
+    CHECK(trade_apply(sav, 0x20000, 0, 0, 4, 366, 367, &ability) == TRADE_OK);
+    CHECK(ability == species_ability(367, 0));
+    memcpy(box, sav + 5 * 0x1000 + 4 + 320, 80);
+    CHECK(pv_decrypt3(box));
+    CHECK(pv_read16(box + 0x20) == species_to_gen3(367));
+    CHECK(pv_read16(box + 0x22) == 0);
+    dex_clear(dex);
+    CHECK(save_read(dex, "Emerald", sav, 0x20000));
+    CHECK(find_species(dex, 367) && find_species(dex, 367)->box == 0);
+    CHECK(find_species(dex, 367)->slot == 4);
+    CHECK(save_bit(dex->saves[0].dex_caught, 367));
+
+    /* Box 1 slot 19 crosses the boundary between two storage sections. */
+    memset(sav, 0, 0x20000);
+    fill_pk3(box, 80, 9, 64, 1000, 1, 0, 0);
+    retouch3(box, 80, 0, ivs, 0, 0);
+    memcpy(sav + 5 * 0x1000 + 3924, box, 44);
+    memcpy(sav + 6 * 0x1000, box + 44, 36);
+    seal_g3_at(sav, 2);
+    CHECK(trade_apply(sav, 0x20000, 0, 1, 19, 64, 65, &ability) == TRADE_OK);
+    memcpy(box, sav + 5 * 0x1000 + 3924, 44);
+    memcpy(box + 44, sav + 6 * 0x1000, 36);
+    CHECK(pv_decrypt3(box));
+    CHECK(pv_read16(box + 0x20) == 65);
+    CHECK(pv_checksum32(sav + 5 * 0x1000, 0xF80) == pv_read16(sav + 5 * 0x1000 + 0xFF6));
+    CHECK(pv_checksum32(sav + 6 * 0x1000, 0xF80) == pv_read16(sav + 6 * 0x1000 + 0xFF6));
+    dex_clear(dex);
+    CHECK(save_read(dex, "Ruby", sav, 0x20000));
+    CHECK(dex->mons[0].species == 65 && dex->mons[0].box == 1 && dex->mons[0].slot == 19);
+
+    /* The same sections still work when they are not stored in id order. */
+    memset(sav, 0, 0x20000);
+    fill_pk3(box, 80, 9, 75, 1000, 1, 0, 0);
+    retouch3(box, 80, 0, ivs, 0, 0);
+    memcpy(sav + 5 * 0x1000 + 4, box, 80);
+    seal_g3_at(sav, 6);
+    {
+        uint8_t tmp[0x1000];
+        memcpy(tmp, sav + 5 * 0x1000, 0x1000);
+        memcpy(sav + 5 * 0x1000, sav + 8 * 0x1000, 0x1000);
+        memcpy(sav + 8 * 0x1000, tmp, 0x1000);
+    }
+    CHECK(trade_apply(sav, 0x20000, 0, 0, 0, 75, 76, &ability) == TRADE_OK);
+    memcpy(box, sav + 8 * 0x1000 + 4, 80);
+    CHECK(pv_decrypt3(box));
+    CHECK(pv_read16(box + 0x20) == 76);
+    dex_clear(dex);
+    CHECK(save_read(dex, "Ruby", sav, 0x20000));
+    CHECK(dex->mons[0].species == 76 && dex->mons[0].box == 0 && dex->mons[0].slot == 0);
+
+    /* Slot 1 is newer, so the trade lands there and slot 0 stays put. */
+    memset(sav, 0, 0x20000);
+    seal_g3_at(sav, 1);
+    fill_pk3(box, 80, 9, 93, 1000, 1, 0, 0);
+    retouch3(box, 80, 0, ivs, 0, 0);
+    memcpy(sav + 0xE000 + 5 * 0x1000 + 4, box, 80);
+    seal_g3_at(sav + 0xE000, 8);
+    CHECK(trade_apply(sav, 0x20000, 0, 0, 0, 93, 94, &ability) == TRADE_OK);
+    CHECK(pv_read32(sav + 0xFFC) == 1);
+    CHECK(pv_read32(sav + 0xE000 + 0xFFC) == 9);
+    memcpy(box, sav + 0xE000 + 5 * 0x1000 + 4, 80);
+    CHECK(pv_decrypt3(box));
+    CHECK(pv_read16(box + 0x20) == 94);
+    CHECK(pv_read16(sav + 5 * 0x1000 + 4) == 0);
+
+    /* FireRed keeps the party earlier in the large block. HP stays in proportion. */
+    memset(sav, 0, 0x20000);
+    pv_write32(sav + 0xAC, 1);
+    fill_pk3(party, 100, 1, 75, 1000, 1, 0, 0);
+    retouch3(party, 100, 0, ivs, 10, 40);
+    sav[0x1000 + 0x034] = 1;
+    memcpy(sav + 0x1000 + 0x038, party, 100);
+    seal_g3_at(sav, 3);
+    CHECK(trade_apply(sav, 0x20000, 1, 0, 0, 75, 76, &ability) == TRADE_OK);
+    memcpy(party, sav + 0x1000 + 0x038, 100);
+    CHECK(pv_decrypt3(party));
+    CHECK(pv_read16(party + 0x20) == 76);
+    memset(&view, 0, sizeof view);
+    view.species = 76;
+    view.ivs = ivs;
+    view.nature = (uint8_t)(1u % 25u);
+    view.level = party[0x54];
+    mon_battle_stats(&view, stats);
+    cur = (int)((10u * stats[0]) / 40u);
+    if (cur < 1)
+        cur = 1;
+    CHECK(pv_read16(party + 0x58) == stats[0]);
+    CHECK(pv_read16(party + 0x56) == (uint16_t)cur);
+    CHECK(pv_read16(party + 0x5A) == stats[1]);
+    CHECK(pv_read16(party + 0x5E) == stats[5]);
+    CHECK(pv_read16(party + 0x60) == stats[3]);
+    CHECK(pv_read16(party + 0x62) == stats[4]);
+    dex_clear(dex);
+    CHECK(save_read(dex, "LeafGreen", sav, 0x20000));
+    CHECK(strcmp(dex->saves[0].game, "FR/LG") == 0);
+    CHECK(dex->mons[0].species == 76 && (dex->mons[0].flags & MON_PARTY));
+    CHECK(save_bit(dex->saves[0].dex_caught, 76));
 
     free(older);
     free(sav);

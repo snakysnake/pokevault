@@ -134,18 +134,24 @@ bool pv_decrypt3(uint8_t *data)
     uint32_t oid;
     uint32_t key;
     uint16_t expect;
+    unsigned order;
     int i;
-
-    expect = pv_read16(data + 0x1C);
-    if (pv_add16(data + 0x20, 48) == expect)
-        return true;
 
     pid = pv_read32(data);
     oid = pv_read32(data + 4);
     key = pid ^ oid;
+    order = pid % 24u;
+    expect = pv_read16(data + 0x1C);
+    /* The checksum is a byte sum, and a shuffle does not change it. A zero
+       key therefore still needs unshuffling unless the block order is already
+       standard. A nonzero key changes the sum, so a match means this record
+       was decrypted already. */
+    if (pv_add16(data + 0x20, 48) == expect && (key != 0 || order == 0))
+        return true;
+
     for (i = 0; i < 48; i += 4)
         pv_write32(data + 0x20 + i, pv_read32(data + 0x20 + i) ^ key);
-    unshuffle(data + 0x20, pid % 24u, 12);
+    unshuffle(data + 0x20, order, 12);
     return pv_add16(data + 0x20, 48) == expect;
 }
 
