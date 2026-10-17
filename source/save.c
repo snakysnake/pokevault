@@ -960,12 +960,11 @@ static void read_profile4(SaveInfo *info, const uint8_t *general, int general_si
     set_profile(info, name, pv_read32(general + trainer + 0x14),
                 pv_read16(general + trainer + 0x22),
                 general[trainer + 0x24], general[trainer + 0x25]);
-    if (kanto) {
-        unsigned bits = (unsigned)general[trainer + 0x1A] | ((unsigned)general[trainer + 0x1F] << 8);
-        set_badges(info, bits, 16, 16);
-    } else {
-        set_badges(info, general[trainer + 0x1A], 8, 8);
-    }
+    /* Johto is the gym-badge byte. Kanto is stored beside it and is not
+       part of the 8 a trade asks for. */
+    set_badges(info, general[trainer + 0x1A], 8, 8);
+    if (kanto)
+        info->kanto_badges = (uint8_t)bit_count(general[trainer + 0x1F], 8);
 }
 
 /* Name is 16 bytes into the player block. Hours follow 0x20 bytes later. */
@@ -1764,4 +1763,131 @@ bool save_read(Dex *dex, const char *display_name, const uint8_t *data, size_t l
         return dex->save_count > before;
     }
     return false;
+}
+
+static const char *const title_names[TITLE_COUNT] = {
+    "Ruby", "Sapphire", "Emerald", "FireRed", "LeafGreen",
+    "Diamond", "Pearl", "Platinum", "HeartGold", "SoulSilver",
+    "Black", "White", "Black 2", "White 2"
+};
+
+/* Game code without the region letter. GBA at 0xAC, DS at 0x0C. */
+static const char *const title_codes[TITLE_COUNT] = {
+    "AXV", "AXP", "BPE", "BPR", "BPG",
+    "ADA", "APA", "CPU", "IPK", "IPG",
+    "IRB", "IRW", "IRE", "IRD"
+};
+
+static const uint8_t title_gens[TITLE_COUNT] = {
+    3, 3, 3, 3, 3,
+    4, 4, 4, 4, 4,
+    5, 5, 5, 5
+};
+
+static int same_game(const char *game, const char *name)
+{
+    return game && name && strcmp(game, name) == 0;
+}
+
+int game_generation(const char *game)
+{
+    int i;
+    if (!game || !game[0])
+        return 0;
+    if (same_game(game, "R/S") || same_game(game, "E") || same_game(game, "FR/LG"))
+        return 3;
+    if (same_game(game, "D/P") || same_game(game, "Pt") || same_game(game, "HG/SS"))
+        return 4;
+    if (same_game(game, "B/W") || same_game(game, "B2/W2"))
+        return 5;
+    for (i = 0; i < TITLE_COUNT; i++) {
+        if (same_game(game, title_names[i]))
+            return title_gens[i];
+    }
+    return 0;
+}
+
+int game_title(const char *game)
+{
+    int i;
+    if (!game || !game[0])
+        return TITLE_NONE;
+    for (i = 0; i < TITLE_COUNT; i++) {
+        if (same_game(game, title_names[i]))
+            return i + 1;
+    }
+    return TITLE_NONE;
+}
+
+const char *title_name(int title)
+{
+    if (title < 1 || title > TITLE_COUNT)
+        return "";
+    return title_names[title - 1];
+}
+
+int title_generation(int title)
+{
+    if (title < 1 || title > TITLE_COUNT)
+        return 0;
+    return title_gens[title - 1];
+}
+
+int title_from_code(const char *code)
+{
+    char buf[3];
+    int i;
+    if (!code || !code[0] || !code[1] || !code[2])
+        return TITLE_NONE;
+    for (i = 0; i < 3; i++) {
+        char c = code[i];
+        if (c >= 'a' && c <= 'z')
+            c = (char)(c - 'a' + 'A');
+        buf[i] = c;
+    }
+    for (i = 0; i < TITLE_COUNT; i++) {
+        if (buf[0] == title_codes[i][0] && buf[1] == title_codes[i][1]
+            && buf[2] == title_codes[i][2])
+            return i + 1;
+    }
+    return TITLE_NONE;
+}
+
+void save_set_title(SaveInfo *info, int title)
+{
+    const char *name;
+    size_t i;
+    if (!info || title < 1 || title > TITLE_COUNT)
+        return;
+    name = title_names[title - 1];
+    info->title = (uint8_t)title;
+    for (i = 0; i < sizeof info->game - 1 && name[i]; i++)
+        info->game[i] = name[i];
+    info->game[i] = 0;
+}
+
+int title_unlocked(const Dex *dex, int title)
+{
+    int i;
+    if (!dex || title < 1 || title > TITLE_COUNT)
+        return 0;
+    for (i = 0; i < dex->save_count; i++) {
+        if (dex->saves[i].title == (uint8_t)title && dex->saves[i].badges >= 8)
+            return 1;
+    }
+    return 0;
+}
+
+int titles_unlocked(const Dex *dex)
+{
+    int n = 0;
+    int title;
+    for (title = 1; title <= TITLE_COUNT; title++)
+        n += title_unlocked(dex, title);
+    return n;
+}
+
+int special_unlocked(const Dex *dex)
+{
+    return titles_unlocked(dex) == TITLE_COUNT;
 }

@@ -85,6 +85,124 @@ static void display_name(const char *path, char *out, size_t cap)
     out[n] = 0;
 }
 
+static int join_path(char *dst, size_t cap, const char *dir, const char *name);
+
+static int code_title(const char *path, long offset)
+{
+    FILE *f;
+    char code[4];
+    int title;
+    f = fopen(path, "rb");
+    if (!f)
+        return 0;
+    if (fseek(f, offset, SEEK_SET) != 0) {
+        fclose(f);
+        return 0;
+    }
+    if (fread(code, 1, 4, f) != 4) {
+        fclose(f);
+        return 0;
+    }
+    fclose(f);
+    music_pump();
+    title = title_from_code(code);
+    return title;
+}
+
+static int rom_title(const char *path)
+{
+    size_t n = strlen(path);
+    char a;
+    char b;
+    char c;
+    if (n < 4 || path[n - 4] != '.')
+        return 0;
+    a = path[n - 3];
+    b = path[n - 2];
+    c = path[n - 1];
+    if (a >= 'A' && a <= 'Z')
+        a = (char)(a - 'A' + 'a');
+    if (b >= 'A' && b <= 'Z')
+        b = (char)(b - 'A' + 'a');
+    if (c >= 'A' && c <= 'Z')
+        c = (char)(c - 'A' + 'a');
+    if (a == 'n' && b == 'd' && c == 's')
+        return code_title(path, 0x0C);
+    if (a == 'g' && b == 'b' && c == 'a')
+        return code_title(path, 0xAC);
+    return 0;
+}
+
+/* The ROM sits beside the save, or one folder up when the save is in saves. */
+static int sibling_title(const char *sav_path)
+{
+    char dir[512];
+    char parent[512];
+    char stem[256];
+    char rom[512];
+    const char *slash = NULL;
+    const char *base;
+    const char *dot = NULL;
+    const char *ps = NULL;
+    size_t i;
+    int title;
+    static const char *exts[] = { ".nds", ".gba", NULL };
+
+    for (i = 0; sav_path[i]; i++) {
+        if (sav_path[i] == '/')
+            slash = sav_path + i;
+    }
+    if (!slash || (size_t)(slash - sav_path) >= sizeof dir)
+        return 0;
+    memcpy(dir, sav_path, (size_t)(slash - sav_path));
+    dir[slash - sav_path] = 0;
+    base = slash + 1;
+    for (i = 0; base[i]; i++) {
+        if (base[i] == '.')
+            dot = base + i;
+    }
+    if (!dot || !is_sav(base) || (size_t)(dot - base) >= sizeof stem)
+        return 0;
+    memcpy(stem, base, (size_t)(dot - base));
+    stem[dot - base] = 0;
+
+    for (i = 0; exts[i]; i++) {
+        if (!join_path(rom, sizeof rom, dir, stem))
+            continue;
+        if (strlen(rom) + strlen(exts[i]) >= sizeof rom)
+            continue;
+        memcpy(rom + strlen(rom), exts[i], strlen(exts[i]) + 1);
+        title = rom_title(rom);
+        if (title)
+            return title;
+    }
+
+    for (i = 0; dir[i]; i++) {
+        if (dir[i] == '/')
+            ps = dir + i;
+    }
+    if (!ps)
+        return 0;
+    base = ps + 1;
+    if (!same_name(base, "saves"))
+        return 0;
+    if ((size_t)(ps - dir) >= sizeof parent)
+        return 0;
+    memcpy(parent, dir, (size_t)(ps - dir));
+    parent[ps - dir] = 0;
+    for (i = 0; exts[i]; i++) {
+        if (!join_path(rom, sizeof rom, parent, stem))
+            continue;
+        if (strlen(rom) + strlen(exts[i]) >= sizeof rom)
+            continue;
+        memcpy(rom + strlen(rom), exts[i], strlen(exts[i]) + 1);
+        title = rom_title(rom);
+        if (title)
+            return title;
+    }
+    return 0;
+}
+
 static int join_path(char *dst, size_t cap, const char *dir, const char *name)
 {
     size_t dl = strlen(dir);
@@ -139,6 +257,11 @@ static void read_sav(Dex *dex, const char *path, uint8_t *buf, size_t cap, ScanP
         if (path_len == 0 || path_len >= sizeof dex->saves[before].path)
             return;
         memcpy(dex->saves[before].path, path, path_len + 1);
+        {
+            int title = sibling_title(path);
+            if (title)
+                save_set_title(&dex->saves[before], title);
+        }
     }
 }
 

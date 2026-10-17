@@ -9,6 +9,7 @@
 #include "sprites.h"
 #include "stats.h"
 #include "trade.h"
+#include "transfer.h"
 #include "types.h"
 
 #include <nds.h>
@@ -35,6 +36,7 @@ enum {
     PAGE_DEX = 1,
     PAGE_GAMES = 2,
     PAGE_PROGRESS = 3,
+    PAGE_DESIGNS = 4,
     GAME_PAGE = 7,
     FILTER_CAUGHT = 0,
     FILTER_SEEN = 1,
@@ -67,7 +69,8 @@ enum {
     CARD_ENTRY = 1,
     CARD_WEAK = 2,
     CARD_EVO = 3,
-    CARD_PAGES = 4,
+    CARD_SEND = 4,
+    CARD_PAGES = 5,
     /* Idle long enough to read as "put the DS down", then a few seconds on each Pokémon. */
     SAVER_IDLE = 20 * 60,
     SAVER_HOLD = 4 * 60
@@ -101,6 +104,11 @@ static int move_cursor;
 static int move_row0 = 10;
 static int page = PAGE_HOME;
 static int home_cursor;
+static int theme;
+static int design_cursor;
+static int send_cursor;
+static int send_ask;
+static char send_error[40];
 static int game_cursor;
 static int game_scroll;
 static int hide_ask;
@@ -329,6 +337,36 @@ static void build_frame(int console_id, int sub)
     bgSetPriority(id, 3);
 }
 
+/* panel, frame edge, accent ink. text is 0 unless a light panel needs dark ink. */
+static const u16 theme_panel[] = {
+    RGB15(4, 4, 4),
+    RGB15(12, 1, 2), RGB15(2, 4, 14), RGB15(1, 10, 6), RGB15(14, 4, 1), RGB15(4, 12, 2),
+    RGB15(6, 8, 14), RGB15(12, 6, 10), RGB15(8, 10, 12), RGB15(12, 8, 2), RGB15(8, 8, 10),
+    RGB15(1, 1, 2), RGB15(28, 28, 30), RGB15(2, 2, 4), RGB15(30, 28, 26),
+    RGB15(8, 2, 14)
+};
+static const u16 theme_edge[] = {
+    RGB15(28, 22, 8),
+    RGB15(31, 8, 10), RGB15(8, 16, 31), RGB15(6, 28, 16), RGB15(31, 12, 4), RGB15(16, 28, 6),
+    RGB15(22, 26, 31), RGB15(31, 18, 24), RGB15(22, 24, 26), RGB15(31, 24, 6), RGB15(22, 22, 26),
+    RGB15(8, 10, 16), RGB15(18, 18, 22), RGB15(16, 4, 8), RGB15(20, 16, 12),
+    RGB15(31, 20, 8)
+};
+static const u16 theme_accent[] = {
+    RGB15(31, 26, 6),
+    RGB15(31, 18, 12), RGB15(16, 22, 31), RGB15(18, 31, 20), RGB15(31, 20, 8), RGB15(24, 31, 10),
+    RGB15(26, 28, 31), RGB15(31, 22, 26), RGB15(28, 30, 31), RGB15(31, 28, 10), RGB15(28, 28, 31),
+    RGB15(18, 20, 28), RGB15(8, 8, 16), RGB15(31, 8, 16), RGB15(12, 6, 4),
+    RGB15(31, 31, 16)
+};
+
+static int theme_index(void)
+{
+    if (theme < 0 || theme > DESIGN_SPECIAL)
+        return 0;
+    return theme;
+}
+
 static void paint_palette(u16 *pal)
 {
     static const u16 ink[16] = {
@@ -349,13 +387,34 @@ static void paint_palette(u16 *pal)
         RGB15(16, 10, 31),
         RGB15(31, 30, 26)
     };
+    int which = theme_index();
+    int light = which == TITLE_WHITE || which == TITLE_WHITE2;
     int i;
     for (i = 0; i < 256; i++)
         pal[i] = 0;
     for (i = 0; i < 16; i++)
         pal[i * 16 + 15] = ink[i];
-    pal[1] = RGB15(4, 4, 4);
-    pal[2] = RGB15(28, 22, 8);
+    pal[1] = theme_panel[which];
+    pal[2] = theme_edge[which];
+    pal[11 * 16 + 15] = theme_accent[which];
+    if (light) {
+        pal[7 * 16 + 15] = RGB15(8, 8, 10);
+        pal[8 * 16 + 15] = RGB15(6, 8, 12);
+        pal[15 * 16 + 15] = RGB15(4, 4, 6);
+    }
+}
+
+static void apply_theme(const Dex *dex)
+{
+    int choice = card_prefs.design;
+    int open = choice == 0;
+    if (choice == DESIGN_SPECIAL)
+        open = special_unlocked(dex);
+    else if (choice >= 1 && choice <= TITLE_COUNT)
+        open = title_unlocked(dex, choice);
+    theme = open ? choice : 0;
+    paint_palette(BG_PALETTE);
+    paint_palette(BG_PALETTE_SUB);
 }
 
 static void setup_consoles(void)
@@ -1262,7 +1321,7 @@ static void draw_mon_title(const MonRef *mon)
 
 static void draw_card_pager(int which)
 {
-    static const char *const names[CARD_PAGES] = {"Stats", "Entry", "Weak", "Evo"};
+    static const char *const names[CARD_PAGES] = {"Stats", "Entry", "Weak", "Evo", "Send"};
     const char *name = names[which >= 0 && which < CARD_PAGES ? which : 0];
     int len = text_len(name);
     int start = (COLS - len) / 2;
@@ -1891,14 +1950,14 @@ static void draw_filter_note(const Dex *dex)
 
 static int game_national(const SaveInfo *info)
 {
-    if (!info || !info->game[0])
-        return NATIONAL_DEX;
-    if (strcmp(info->game, "B/W") == 0 || strcmp(info->game, "B2/W2") == 0)
+    int gen = game_generation(info ? info->game : NULL);
+    if (gen == 5)
         return 649;
-    if (strcmp(info->game, "D/P") == 0 || strcmp(info->game, "Pt") == 0
-        || strcmp(info->game, "HG/SS") == 0)
+    if (gen == 4)
         return 493;
-    return 386;
+    if (gen == 3)
+        return 386;
+    return NATIONAL_DEX;
 }
 
 static int dex_flag_count(const SaveInfo *info, int want_caught, int cap)
@@ -1972,17 +2031,21 @@ static void format_play(const SaveInfo *info, char *out, size_t cap)
     snprintf(out, cap, "%u:%02u:%02u", info->hours, minutes, seconds);
 }
 
-static void draw_home(void)
+static void draw_home(const Dex *dex)
 {
-    static const char *const names[3] = {"Pokedex", "Games", "Progress"};
+    static const char *const names[4] = {"Pokedex", "Games", "Progress", "Designs"};
+    char count[8];
     int i;
     title_row(0, "PokeVault", "");
     rule_row(1);
-    for (i = 0; i < 3; i++) {
+    snprintf(count, sizeof count, "%d/14", dex ? titles_unlocked(dex) : 0);
+    for (i = 0; i < 4; i++) {
         int on = i == home_cursor;
         at(3 + i, 0);
         emit(on ? INK_GOLD : INK_CREAM, on ? ">" : "", 2);
         emit(on ? INK_GOLD : INK_CREAM, names[i], 16);
+        if (i == 3)
+            emit_right(on ? INK_GOLD : INK_MUTED, count, COLS - 18);
     }
 }
 
@@ -1998,12 +2061,16 @@ static void draw_home_note(void)
         fputs("Badges, stars, and", stdout);
         at(9, 0);
         fputs("the boxes on that save.", stdout);
-    } else {
+    } else if (home_cursor == 2) {
         fputs("Each region can be", stdout);
         at(9, 0);
         fputs("finished. A opens", stdout);
         at(10, 0);
         fputs("what is still missing.", stdout);
+    } else {
+        fputs("One look per cartridge,", stdout);
+        at(9, 0);
+        fputs("once it has 8 badges.", stdout);
     }
     at(20, 0);
     use_ink(INK_MUTED);
@@ -2177,8 +2244,8 @@ static void draw_games(const Dex *dex)
         snprintf(dexn, sizeof dexn, "%d/%d", dex_flag_count(info, 1, cap), cap);
         at(row, 0);
         emit(on ? INK_GOLD : INK_CREAM, on ? ">" : "", 2);
-        emit(on ? INK_GOLD : INK_CREAM, profile_name(info), 20);
-        emit_right(on ? INK_GOLD : INK_MUTED, info->game, 8);
+        emit(on ? INK_GOLD : INK_CREAM, profile_name(info), 16);
+        emit_right(on ? INK_GOLD : INK_MUTED, info->game, 12);
         at(row + 1, 0);
         emit(INK_MUTED, "", 2);
         emit(on ? INK_CREAM : INK_MUTED, play, 12);
@@ -2193,7 +2260,7 @@ static void draw_game_card(const Dex *dex)
     char play[16];
     char stored[12];
     char shiny[12];
-    char badges[12];
+    char badges[24];
     char stars[12];
     char caught_txt[16];
     char seen_txt[16];
@@ -2243,7 +2310,12 @@ static void draw_game_card(const Dex *dex)
     format_play(info, play, sizeof play);
     snprintf(stored, sizeof stored, "%u", (unsigned)info->count);
     snprintf(shiny, sizeof shiny, "%d", save_shiny_count(dex, game_cursor));
-    snprintf(badges, sizeof badges, "%u/%u", (unsigned)info->badges, (unsigned)info->badge_slots);
+    if (info->kanto_badges && (info->title == TITLE_HEARTGOLD || info->title == TITLE_SOULSILVER
+                               || strcmp(info->game, "HG/SS") == 0))
+        snprintf(badges, sizeof badges, "%u/%u  Kanto %u",
+                 (unsigned)info->badges, (unsigned)info->badge_slots, (unsigned)info->kanto_badges);
+    else
+        snprintf(badges, sizeof badges, "%u/%u", (unsigned)info->badges, (unsigned)info->badge_slots);
     snprintf(stars, sizeof stars, "%u/%u", (unsigned)info->stars, (unsigned)info->star_slots);
     snprintf(caught_txt, sizeof caught_txt, "%d/%d", caught_n, cap);
     snprintf(seen_txt, sizeof seen_txt, "%d/%d", seen_n, cap);
@@ -2829,12 +2901,10 @@ static void draw_saver(const Dex *dex)
 
 static int save_box_count(const SaveInfo *info)
 {
-    if (!info || !info->game[0])
-        return 14;
-    if (strcmp(info->game, "B/W") == 0 || strcmp(info->game, "B2/W2") == 0)
+    int gen = game_generation(info ? info->game : NULL);
+    if (gen == 5)
         return 24;
-    if (strcmp(info->game, "D/P") == 0 || strcmp(info->game, "Pt") == 0
-        || strcmp(info->game, "HG/SS") == 0)
+    if (gen == 4)
         return 18;
     return 14;
 }
@@ -3185,17 +3255,9 @@ static int evo_ink(const Dex *dex, unsigned species, int selected)
 
 static int save_generation(const Dex *dex, const MonRef *mon)
 {
-    const char *game;
     if (!dex || !mon || mon->save_index >= dex->save_count)
         return 0;
-    game = dex->saves[mon->save_index].game;
-    if (strcmp(game, "R/S") == 0 || strcmp(game, "E") == 0 || strcmp(game, "FR/LG") == 0)
-        return 3;
-    if (strcmp(game, "D/P") == 0 || strcmp(game, "Pt") == 0 || strcmp(game, "HG/SS") == 0)
-        return 4;
-    if (strcmp(game, "B/W") == 0 || strcmp(game, "B2/W2") == 0)
-        return 5;
-    return 0;
+    return game_generation(dex->saves[mon->save_index].game);
 }
 
 static void use_face(unsigned species, int shiny)
@@ -3490,6 +3552,297 @@ static int evo_steer(const Dex *dex, uint32_t hit, uint32_t down)
     return 0;
 }
 
+static int design_open(const Dex *dex, int id)
+{
+    if (id == 0)
+        return 1;
+    if (!dex)
+        return 0;
+    if (id == DESIGN_SPECIAL)
+        return special_unlocked(dex);
+    if (id >= 1 && id <= TITLE_COUNT)
+        return title_unlocked(dex, id);
+    return 0;
+}
+
+static const char *design_label(int id)
+{
+    if (id <= 0)
+        return "Default";
+    if (id == DESIGN_SPECIAL)
+        return "Special";
+    return title_name(id);
+}
+
+static void draw_designs(const Dex *dex)
+{
+    char count[8];
+    int i;
+    snprintf(count, sizeof count, "%d/14", dex ? titles_unlocked(dex) : 0);
+    title_row(0, "Designs", count);
+    rule_row(1);
+    for (i = 0; i <= DESIGN_SPECIAL; i++) {
+        int on = i == design_cursor;
+        int open = design_open(dex, i);
+        int ink = on ? INK_GOLD : (open ? INK_CREAM : INK_MUTED);
+        at(2 + i, 0);
+        emit(ink, on ? ">" : "", 2);
+        emit(ink, design_label(i), 16);
+        if (theme == i)
+            emit_right(ink, "on", 4);
+    }
+}
+
+static void draw_designs_note(const Dex *dex)
+{
+    int id = design_cursor;
+    int open;
+    if (id < 0)
+        id = 0;
+    if (id > DESIGN_SPECIAL)
+        id = DESIGN_SPECIAL;
+    open = design_open(dex, id);
+    at(4, 0);
+    use_ink(INK_GOLD);
+    fputs(design_label(id), stdout);
+    at(6, 0);
+    use_ink(INK_CREAM);
+    if (id == 0)
+        fputs("Gold on black. Always here.", stdout);
+    else if (id == DESIGN_SPECIAL) {
+        if (open)
+            fputs("Every cartridge, 8 badges.", stdout);
+        else
+            fputs("Needs all 14, each with 8.", stdout);
+    } else if (open)
+        fputs("Unlocked on this card.", stdout);
+    else
+        fputs("Needs this game, 8 badges.", stdout);
+    at(21, 0);
+    use_ink(INK_MUTED);
+    fputs(open ? "A use" : "", stdout);
+    at(21, COLS - 6);
+    fputs("B back", stdout);
+}
+
+/* Legal destinations only. reason is the most common skip, or 0. */
+static int send_fill(const Dex *dex, const MonRef *mon, int *out, int cap, int *reason)
+{
+    int tally[11];
+    int n = 0;
+    int i;
+    int best = 0;
+    int best_n = 0;
+    for (i = 0; i < 11; i++)
+        tally[i] = 0;
+    if (reason)
+        *reason = 0;
+    if (!dex || !mon || !out || cap <= 0)
+        return 0;
+    for (i = 0; i < dex->save_count; i++) {
+        int rc = transfer_gate(dex, mon, i);
+        if (rc == XFER_OK) {
+            if (n < cap)
+                out[n++] = i;
+        } else if (rc > 0 && rc < 11)
+            tally[rc]++;
+    }
+    for (i = 1; i < 11; i++) {
+        if (i == XFER_NO || i == XFER_IO || i == XFER_BAD)
+            continue;
+        if (tally[i] > best_n) {
+            best_n = tally[i];
+            best = i;
+        }
+    }
+    if (reason)
+        *reason = best;
+    return n;
+}
+
+static void draw_send(const Dex *dex, const MonRef *mon)
+{
+    int dests[MAX_SAVES];
+    int n;
+    int reason = 0;
+    int start;
+    int i;
+    char line[40];
+    enum { SEND_PAGE = 12 };
+
+    if (mon)
+        draw_mon_title(mon);
+    else {
+        at(0, 0);
+        use_ink(INK_MUTED);
+        fputs("Nothing stored.", stdout);
+    }
+    n = send_fill(dex, mon, dests, MAX_SAVES, &reason);
+    if (n <= 0) {
+        put_span(4, 0, INK_MUTED, "Nowhere to send it.");
+        if (reason && transfer_reason(reason)[0]) {
+            snprintf(line, sizeof line, "%s", transfer_reason(reason));
+            put_span(6, 0, INK_GOLD, line);
+        }
+        return;
+    }
+    if (send_cursor < 0)
+        send_cursor = 0;
+    if (send_cursor >= n)
+        send_cursor = n - 1;
+    start = send_cursor - SEND_PAGE + 1;
+    if (start < 0)
+        start = 0;
+    if (n > SEND_PAGE && start > n - SEND_PAGE)
+        start = n - SEND_PAGE;
+    for (i = start; i < n && i < start + SEND_PAGE; i++) {
+        const SaveInfo *info = &dex->saves[dests[i]];
+        int on = i == send_cursor;
+        int row = 3 + (i - start);
+        at(row, 0);
+        emit(on ? INK_GOLD : INK_CREAM, on ? ">" : "", 2);
+        emit(on ? INK_GOLD : INK_CREAM, profile_name(info), 16);
+        emit_right(on ? INK_GOLD : INK_MUTED, info->game, 12);
+    }
+    if (reason && transfer_reason(reason)[0]) {
+        snprintf(line, sizeof line, "%s", transfer_reason(reason));
+        put_span(19, 0, INK_MUTED, line);
+    }
+    put_span(20, 0, INK_MUTED, "A send");
+}
+
+static void draw_send_confirm(const Dex *dex, const MonRef *mon)
+{
+    int dests[MAX_SAVES];
+    int n;
+    int dest;
+    uint16_t evolved = 0;
+    int from;
+    int to;
+    char line[40];
+    TradePath path;
+
+    n = send_fill(dex, mon, dests, MAX_SAVES, NULL);
+    if (!mon || send_cursor < 0 || send_cursor >= n) {
+        send_ask = 0;
+        return;
+    }
+    dest = dests[send_cursor];
+    from = save_generation(dex, mon);
+    to = game_generation(dex->saves[dest].game);
+    use_face(mon->species, (mon->flags & MON_SHINY) != 0);
+    snprintf(line, sizeof line, "Send to %s?", profile_name(&dex->saves[dest]));
+    put_span(4, 0, INK_CREAM, line);
+    put_span(6, 0, INK_MUTED, dex->saves[dest].game);
+    if (from == to && transfer_evolves(mon->species, mon->item, from, 0, &evolved) && evolved) {
+        put_span(10, 0, INK_MUTED, "Arrives as");
+        put_span(11, 0, INK_GOLD, species_name(evolved));
+        if (species_trade_ready_gen(mon->species, mon->item, from, &path) && path.item) {
+            const char *held = item_name(from == 3 ? 3 : 4, path.item);
+            snprintf(line, sizeof line, "Uses its %s.", held[0] ? held : "item");
+            put_span(13, 0, INK_MUTED, line);
+        }
+    } else if (from == 3 && to == 4) {
+        put_span(10, 0, INK_MUTED, "Through Pal Park.");
+    } else if (from == 4 && to == 5) {
+        put_span(10, 0, INK_MUTED, "Through Poke Transfer.");
+    }
+    put_span(15, 0, INK_MUTED, "A .bak is written first.");
+    if (send_error[0])
+        put_span(17, 0, INK_GOLD, send_error);
+    put_span(21, 0, INK_MUTED, "A send");
+    put_span(21, COLS - 8, INK_MUTED, "B cancel");
+}
+
+static MonRef *current_copy_mut(Dex *dex);
+
+static const char *send_status(int rc)
+{
+    if (rc == XFER_IO)
+        return "Could not write the save.";
+    if (rc == XFER_BAD)
+        return "That save did not check out.";
+    if (rc == XFER_BADGES)
+        return "Both saves need 8 badges.";
+    if (rc == XFER_ROOM)
+        return "No empty slot there.";
+    if (rc == XFER_LAST)
+        return "That is the last one.";
+    if (rc == XFER_EGG)
+        return "Eggs stay in their game.";
+    if (rc == XFER_MAIL)
+        return "Take the Mail off first.";
+    if (rc == XFER_ITEM)
+        return "Take that item off first.";
+    if (rc == XFER_GENERATION)
+        return "That game cannot take it.";
+    return "It cannot be sent.";
+}
+
+static void finish_send(Dex *dex)
+{
+    MonRef *mon = current_copy_mut(dex);
+    int dests[MAX_SAVES];
+    int n;
+    int dest;
+    uint8_t save_index;
+    uint8_t box;
+    uint8_t slot;
+    int party;
+    uint16_t arrived;
+    int rc;
+
+    n = send_fill(dex, mon, dests, MAX_SAVES, NULL);
+    if (!mon || send_cursor < 0 || send_cursor >= n) {
+        send_ask = 0;
+        return;
+    }
+    dest = dests[send_cursor];
+    consoleSelect(&bottom_console);
+    consoleClear();
+    put_span(10, 0, INK_CREAM, "Sending...");
+    swiWaitForVBlank();
+    sprites_flush();
+    music_pump();
+    rc = transfer_commit(dex, mon, dest);
+    if (rc != XFER_OK) {
+        snprintf(send_error, sizeof send_error, "%s", send_status(rc));
+        return;
+    }
+    arrived = mon->species;
+    save_index = mon->save_index;
+    box = mon->box;
+    slot = mon->slot;
+    party = (mon->flags & MON_PARTY) != 0;
+    send_ask = 0;
+    send_error[0] = 0;
+    dex_sort(dex, 1);
+    refresh_rows(dex);
+    evo_anchor = 0;
+    focus_species = 0;
+    if (species_listed(arrived)) {
+        int total;
+        int i;
+        view = VIEW_COPIES;
+        copy_page = CARD_SEND;
+        select_species(arrived);
+        copy_cursor = 0;
+        total = enabled_stored(dex, &rows[dex_cursor]);
+        for (i = 0; i < total; i++) {
+            const MonRef *got = enabled_mon(dex, &rows[dex_cursor], i);
+            if (got && got->save_index == save_index && got->box == box && got->slot == slot
+                && ((got->flags & MON_PARTY) != 0) == party) {
+                copy_cursor = i;
+                break;
+            }
+        }
+        clamp_cursor(&copy_cursor, &copy_scroll, total, COPY_PAGE);
+    } else {
+        view = VIEW_DEX;
+        clamp_cursor(&dex_cursor, &dex_scroll, row_count, DEX_PAGE);
+    }
+}
+
 static void draw(const Dex *dex)
 {
     int copies = 0;
@@ -3515,8 +3868,10 @@ static void draw(const Dex *dex)
             draw_games(dex);
         else if (page == PAGE_PROGRESS)
             draw_progress(dex);
+        else if (page == PAGE_DESIGNS)
+            draw_designs(dex);
         else
-            draw_home();
+            draw_home(dex);
         consoleSelect(&bottom_console);
         consoleClear();
         use_ink(INK_CREAM);
@@ -3528,6 +3883,8 @@ static void draw(const Dex *dex)
         }
         else if (page == PAGE_PROGRESS)
             draw_progress_note(dex);
+        else if (page == PAGE_DESIGNS)
+            draw_designs_note(dex);
         else
             draw_home_note();
         sprites_hide();
@@ -3590,6 +3947,18 @@ static void draw(const Dex *dex)
                 sprites_show(mon->species, (mon->flags & MON_SHINY) != 0, (mon->flags & MON_EGG) != 0);
             else
                 sprites_show(row->species, 0, 0);
+        } else if (send_ask) {
+            draw_send_confirm(dex, mon);
+            if (!send_ask) {
+                draw_send(dex, mon);
+                draw_card_pager(copy_page);
+            }
+            if (face_on)
+                sprites_show(face_species, face_shiny, 0);
+            else if (mon)
+                sprites_show(mon->species, (mon->flags & MON_SHINY) != 0, (mon->flags & MON_EGG) != 0);
+            else
+                sprites_show(row->species, 0, 0);
         } else if (view == VIEW_MOVE) {
             int index = 0;
             int total = 0;
@@ -3610,6 +3979,8 @@ static void draw(const Dex *dex)
                 draw_copy_weak(mon, mon->species, mon->form, (mon->flags & MON_SHINY) != 0);
             else if (copy_page == CARD_EVO)
                 draw_copy_evo(dex, mon, mon->species, mon->form, (mon->flags & MON_SHINY) != 0);
+            else if (copy_page == CARD_SEND)
+                draw_send(dex, mon);
             else
                 draw_copy_card(dex, mon, view == VIEW_PICK);
             draw_card_pager(copy_page);
@@ -3624,6 +3995,8 @@ static void draw(const Dex *dex)
                 draw_copy_weak(NULL, row->species, 0, 0);
             else if (copy_page == CARD_EVO)
                 draw_copy_evo(dex, NULL, row->species, 0, 0);
+            else if (copy_page == CARD_SEND)
+                draw_send(dex, NULL);
             else
                 draw_uncaught_stats(row->species);
             draw_card_pager(copy_page);
@@ -3885,6 +4258,11 @@ void ui_run(Dex *dex)
     hide_ask = 0;
     trade_ask = 0;
     trade_error[0] = 0;
+    send_ask = 0;
+    send_error[0] = 0;
+    send_cursor = 0;
+    design_cursor = card_prefs.design <= DESIGN_SPECIAL ? card_prefs.design : 0;
+    apply_theme(dex);
     view = VIEW_DEX;
     dex_cursor = 0;
     dex_scroll = 0;
@@ -3958,6 +4336,8 @@ void ui_run(Dex *dex)
                     hide_ask = 0;
                     clamp_games(dex);
                 }
+                if (page == PAGE_DESIGNS)
+                    design_cursor = card_prefs.design <= DESIGN_SPECIAL ? card_prefs.design : 0;
                 music_click();
                 dirty = 1;
             } else if (down & (KEY_UP | KEY_DOWN | KEY_LEFT | KEY_RIGHT)) {
@@ -3968,8 +4348,8 @@ void ui_run(Dex *dex)
                     home_cursor++;
                 if (home_cursor < 0)
                     home_cursor = 0;
-                if (home_cursor > 2)
-                    home_cursor = 2;
+                if (home_cursor > 3)
+                    home_cursor = 3;
                 if (home_cursor != before) {
                     music_click();
                     dirty = 1;
@@ -4079,6 +4459,32 @@ void ui_run(Dex *dex)
                     dirty = 1;
                 }
             }
+        } else if (page == PAGE_DESIGNS) {
+            if (hit & KEY_A && design_open(dex, design_cursor)) {
+                card_prefs.design = (uint8_t)design_cursor;
+                prefs_commit(&card_prefs);
+                apply_theme(dex);
+                music_click();
+                dirty = 1;
+            } else if (hit & KEY_B) {
+                page = PAGE_HOME;
+                music_click();
+                dirty = 1;
+            } else if (down & (KEY_UP | KEY_DOWN)) {
+                int before = design_cursor;
+                if (down & KEY_UP)
+                    design_cursor--;
+                if (down & KEY_DOWN)
+                    design_cursor++;
+                if (design_cursor < 0)
+                    design_cursor = 0;
+                if (design_cursor > DESIGN_SPECIAL)
+                    design_cursor = DESIGN_SPECIAL;
+                if (design_cursor != before) {
+                    music_click();
+                    dirty = 1;
+                }
+            }
         } else if (trade_ask && view == VIEW_COPIES) {
             if (hit & KEY_A) {
                 finish_trade(dex);
@@ -4087,6 +4493,17 @@ void ui_run(Dex *dex)
             } else if (hit & KEY_B) {
                 trade_ask = 0;
                 trade_error[0] = 0;
+                music_click();
+                dirty = 1;
+            }
+        } else if (send_ask && view == VIEW_COPIES) {
+            if (hit & KEY_A) {
+                finish_send(dex);
+                music_click();
+                dirty = 1;
+            } else if (hit & KEY_B) {
+                send_ask = 0;
+                send_error[0] = 0;
                 music_click();
                 dirty = 1;
             }
@@ -4252,6 +4669,8 @@ void ui_run(Dex *dex)
                 select_species(focus_species);
             focus_species = 0;
             evo_anchor = 0;
+            send_ask = 0;
+            send_error[0] = 0;
             if (from_box) {
                 from_box = 0;
                 boxes_on = 1;
@@ -4286,6 +4705,8 @@ void ui_run(Dex *dex)
         } else if ((view == VIEW_COPIES || view == VIEW_PICK) && (hit & (KEY_L | KEY_R))) {
             view = VIEW_COPIES;
             move_cursor = -1;
+            send_ask = 0;
+            send_error[0] = 0;
             if (hit & KEY_L)
                 copy_page = (copy_page + CARD_PAGES - 1) % CARD_PAGES;
             if (hit & KEY_R)
@@ -4319,6 +4740,39 @@ void ui_run(Dex *dex)
                 }
                 music_click();
                 dirty = 1;
+            }
+        } else if (view == VIEW_COPIES && copy_page == CARD_SEND && !send_ask
+                   && (hit & KEY_A || (down & (KEY_UP | KEY_DOWN)))) {
+            const MonRef *held = current_copy(dex);
+            int dests[MAX_SAVES];
+            int n = send_fill(dex, held, dests, MAX_SAVES, NULL);
+            if (hit & KEY_A) {
+                if (held && n > 0) {
+                    if (send_cursor < 0)
+                        send_cursor = 0;
+                    if (send_cursor >= n)
+                        send_cursor = n - 1;
+                    send_error[0] = 0;
+                    send_ask = 1;
+                    music_click();
+                    dirty = 1;
+                }
+            } else {
+                int before = send_cursor;
+                if (down & KEY_UP)
+                    send_cursor--;
+                if (down & KEY_DOWN)
+                    send_cursor++;
+                if (send_cursor < 0)
+                    send_cursor = 0;
+                if (n > 0 && send_cursor >= n)
+                    send_cursor = n - 1;
+                if (n <= 0)
+                    send_cursor = 0;
+                if (send_cursor != before) {
+                    music_click();
+                    dirty = 1;
+                }
             }
         } else if (view == VIEW_COPIES && copy_page == CARD_EVO && (hit & KEY_Y)) {
             const MonRef *held = current_copy(dex);

@@ -39,6 +39,8 @@ const char *location_name(unsigned origin, unsigned loc)
             name = ranged(loc4_names_2000, (unsigned)(sizeof loc4_names_2000 / sizeof loc4_names_2000[0]), 2000, loc);
         if (!name[0])
             name = ranged(loc4_names_3000, (unsigned)(sizeof loc4_names_3000 / sizeof loc4_names_3000[0]), 3000, loc);
+        if (!name[0] && (origin == 7 || origin == 8) && loc == 436)
+            name = loc4_pal_park_hgss;
     } else if (origin >= 20 && origin <= 23) {
         name = entry_at(loc5_names, (unsigned)(sizeof loc5_names / sizeof loc5_names[0]), loc);
         if (!name[0])

@@ -6,6 +6,9 @@
 const char *species_name(unsigned species);
 uint8_t species_growth(unsigned species);
 
+/* The friendship a hatched Pokémon of this species starts with. */
+uint8_t species_base_friendship(unsigned species);
+
 /* Ruby, Sapphire, Emerald, FireRed, and LeafGreen store an internal species
    index. Kanto and Johto match the National Dex. Hoenn does not: Blaziken is
    282, which is Gardevoir's national number. Returns 0 for an unused index. */

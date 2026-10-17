@@ -2,6 +2,7 @@
 #include "evo.h"
 #include "identity.h"
 #include "trade.h"
+#include "transfer.h"
 #include "moves.h"
 #include "flavor.h"
 #include "prefs.h"
@@ -13,6 +14,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 static int fails;
 
@@ -1103,7 +1105,8 @@ static void test_cards(Dex *dex)
     dex_clear(dex);
     CHECK(save_read(dex, "HeartGold", sav, 0x80000));
     CHECK(strcmp(dex->saves[0].game, "HG/SS") == 0);
-    CHECK(dex->saves[0].badges == 12 && dex->saves[0].badge_slots == 16);
+    CHECK(dex->saves[0].badges == 8 && dex->saves[0].badge_slots == 8);
+    CHECK(dex->saves[0].kanto_badges == 4);
     free(sav);
 
     sav = calloc(1, 0x80000);
@@ -1179,6 +1182,7 @@ static void test_prefs(Dex *dex)
     CHECK(prefs_decode(&again, buf, n));
     CHECK(again.hidden_count == 1);
     CHECK(strcmp(again.hidden[0].path, "fat:/roms/gba/Ruby.sav") == 0);
+    CHECK(again.design == 0);
     CHECK(again.extra_len == (int)sizeof future);
     CHECK(memcmp(again.extra, future, sizeof future) == 0);
 
@@ -1246,6 +1250,15 @@ static void test_prefs(Dex *dex)
     CHECK(memcmp(again.extra, future, sizeof future) == 0);
     CHECK(hidden_has(&again, "fat:/roms/gba/Ruby.sav"));
     CHECK(hidden_has(&again, "fat:/old/Emerald.sav"));
+
+    prefs.design = TITLE_HEARTGOLD;
+    n = prefs_encode(&prefs, buf, sizeof buf);
+    CHECK(prefs_decode(&again, buf, n));
+    CHECK(again.design == TITLE_HEARTGOLD);
+    CHECK(again.extra_len == (int)sizeof future);
+    CHECK(memcmp(again.extra, future, sizeof future) == 0);
+    prefs_capture(&prefs, dex, shown, 2);
+    CHECK(prefs.design == TITLE_HEARTGOLD);
 }
 
 static const EvoMember *family_stage(const EvoMember *mem, int n, unsigned species)
@@ -1603,10 +1616,10 @@ static void test_trade(Dex *dex)
     retouch45(box, 136, 68, 20, 10, 0, 0, ivs, 0, 0);
     memcpy(sav + 0x400, box, sizeof box);
     seal_gen5(sav, 0x24000, 0x8C, 0x23F34, 3);
-    CHECK(trade_apply(sav, 0x80000, 0, 0, 0, 588, 589, &ability) == TRADE_OK);
+    CHECK(trade_apply(sav, 0x80000, 0, 0, 0, 588, 589, &ability) == TRADE_NO);
     memcpy(box, sav + 0x400, sizeof box);
     CHECK(pv_decrypt45(box, 136));
-    CHECK(pv_read16(box + 8) == 589 && pv_read16(box + 0x0A) == 20);
+    CHECK(pv_read16(box + 8) == 588 && pv_read16(box + 0x0A) == 20);
 
     /* Party Kadabra. Current HP stays at a quarter of the new maximum. */
     fill_pk45(pk, 220, 1, 64, 1000, 1, 0, 0, 16);
@@ -1931,6 +1944,560 @@ static void test_trade(Dex *dex)
     free(sav);
 }
 
+static int write_bin(const char *path, const uint8_t *data, size_t n)
+{
+    FILE *out = fopen(path, "wb");
+    if (!out)
+        return 0;
+    if (fwrite(data, 1, n, out) != n) {
+        fclose(out);
+        return 0;
+    }
+    return fclose(out) == 0;
+}
+
+static int file_match(const char *path, const uint8_t *data, size_t n)
+{
+    FILE *in = fopen(path, "rb");
+    uint8_t buf[4096];
+    size_t off = 0;
+    if (!in)
+        return 0;
+    while (off < n) {
+        size_t chunk = n - off;
+        size_t got;
+        if (chunk > sizeof buf)
+            chunk = sizeof buf;
+        got = fread(buf, 1, chunk, in);
+        if (got != chunk || memcmp(buf, data + off, got) != 0) {
+            fclose(in);
+            return 0;
+        }
+        off += got;
+    }
+    if (fgetc(in) != EOF) {
+        fclose(in);
+        return 0;
+    }
+    fclose(in);
+    return 1;
+}
+
+static void arm_save(SaveInfo *info, const char *game, int badges, int count)
+{
+    memset(info, 0, sizeof *info);
+    snprintf(info->game, sizeof info->game, "%s", game);
+    info->badges = (uint8_t)badges;
+    info->badge_slots = 8;
+    info->count = (uint16_t)count;
+}
+
+static void arm_mon(MonRef *mon, int save, uint16_t species, int egg, uint16_t item, int item_gen)
+{
+    memset(mon, 0, sizeof *mon);
+    mon->save_index = (uint8_t)save;
+    mon->species = species;
+    mon->item = item;
+    mon->item_gen = (uint8_t)item_gen;
+    if (egg)
+        mon->flags = MON_EGG;
+}
+
+static void seal_dp(uint8_t *sav, int badges)
+{
+    memset(sav, 0, 0x80000);
+    mark_gen4(sav, 0xC100, 0xC100, 0x121E0);
+    sav[0x7E] = (uint8_t)badges;
+}
+
+static void seal_hgss(uint8_t *sav, int johto, int kanto)
+{
+    memset(sav, 0, 0x80000);
+    mark_gen4(sav, 0xF628, 0xF700, 0x12310);
+    sav[0x7E] = (uint8_t)johto;
+    sav[0x83] = (uint8_t)kanto;
+}
+
+static void put_box5(uint8_t *sav, int slot, const uint8_t *pk)
+{
+    memcpy(sav + 0x400 + slot * 136, pk, 136);
+}
+
+static int read_match_slot(const char *path);
+
+static void test_transfer(Dex *dex)
+{
+    static const char *const codes[TITLE_COUNT] = {
+        "AXVE", "AXPE", "BPEE", "BPRF", "BPGE",
+        "ADAE", "APAE", "CPUE", "IPKE", "IPGE",
+        "IRBO", "IRWO", "IREO", "IRDO"
+    };
+    uint8_t *src;
+    uint8_t *dst;
+    uint8_t *snap;
+    uint8_t box[136];
+    uint8_t other[136];
+    uint8_t g3[80];
+    uint8_t party[220];
+    TransferLand land;
+    MonRef *moved;
+    uint16_t evolved = 0;
+    time_t now;
+    struct tm *when;
+    int i;
+    const uint32_t ivs = (1u << 30) - 1u;
+
+    CHECK(strcmp(transfer_reason(XFER_BADGES), "badges") == 0);
+    CHECK(strcmp(transfer_reason(XFER_GENERATION), "the generation") == 0);
+    CHECK(strcmp(transfer_reason(XFER_ROOM), "no room") == 0);
+    CHECK(strcmp(transfer_reason(XFER_EGG), "an egg") == 0);
+    CHECK(strcmp(transfer_reason(XFER_MAIL), "mail") == 0);
+    CHECK(strcmp(transfer_reason(XFER_LAST), "the last one") == 0);
+    CHECK(strcmp(transfer_reason(XFER_ITEM), "its item") == 0);
+    CHECK(strcmp(item_name(3, 13), "Potion") == 0);
+    CHECK(strcmp(item_name(4, 17), "Potion") == 0);
+    CHECK(strcmp(item_name(4, 137), "Greet Mail") == 0);
+    CHECK(strcmp(item_name(3, 121), "Orange Mail") == 0);
+    CHECK(species_base_friendship(1) == 70);
+    CHECK(strcmp(location_name(10, 55), "Pal Park") == 0);
+    CHECK(strcmp(location_name(7, 436), "Pal Park") == 0);
+    CHECK(strcmp(location_name(8, 436), "Pal Park") == 0);
+    CHECK(strcmp(location_name(21, 30001), "Poke Transfer") == 0);
+
+    for (i = 0; i < TITLE_COUNT; i++) {
+        CHECK(title_from_code(codes[i]) == i + 1);
+        CHECK(game_title(title_name(i + 1)) == i + 1);
+        CHECK(game_generation(title_name(i + 1)) == title_generation(i + 1));
+    }
+    CHECK(title_from_code("axve") == TITLE_RUBY);
+    CHECK(title_from_code("ZZZ") == 0);
+    CHECK(game_title("R/S") == 0);
+    CHECK(game_generation("R/S") == 3);
+    CHECK(game_generation("HG/SS") == 4);
+    CHECK(game_generation("B2/W2") == 5);
+    CHECK(!transfer_evolves(588, 0, 5, 0, &evolved));
+    CHECK(transfer_evolves(588, 20, 5, 616, &evolved) && evolved == 589);
+    CHECK(transfer_evolves(616, 20, 5, 588, &evolved) && evolved == 617);
+    CHECK(transfer_evolves(64, 0, 5, 0, &evolved) && evolved == 65);
+    CHECK(!transfer_evolves(349, 537, 4, 0, &evolved));
+    CHECK(transfer_evolves(349, 537, 5, 0, &evolved) && evolved == 350);
+
+    dex_clear(dex);
+    dex->save_count = 2;
+    arm_save(&dex->saves[0], "B/W", 8, 2);
+    arm_save(&dex->saves[1], "B2/W2", 8, 0);
+    arm_mon(&dex->mons[0], 0, 64, 0, 0, 0);
+    CHECK(transfer_gate(dex, &dex->mons[0], 1) == XFER_OK);
+    CHECK(transfer_gate(dex, &dex->mons[0], 0) == XFER_NO);
+    dex->saves[0].badges = 7;
+    CHECK(transfer_gate(dex, &dex->mons[0], 1) == XFER_BADGES);
+    dex->saves[0].badges = 8;
+    dex->saves[1].badges = 7;
+    CHECK(transfer_gate(dex, &dex->mons[0], 1) == XFER_BADGES);
+    dex->saves[1].badges = 8;
+    arm_save(&dex->saves[1], "D/P", 8, 0);
+    CHECK(transfer_gate(dex, &dex->mons[0], 1) == XFER_GENERATION);
+    arm_save(&dex->saves[0], "R/S", 8, 2);
+    arm_save(&dex->saves[1], "B/W", 8, 0);
+    arm_mon(&dex->mons[0], 0, 1, 0, 0, 0);
+    CHECK(transfer_gate(dex, &dex->mons[0], 1) == XFER_GENERATION);
+    arm_save(&dex->saves[1], "HG/SS", 8, 0);
+    CHECK(transfer_gate(dex, &dex->mons[0], 1) == XFER_OK);
+    arm_mon(&dex->mons[0], 0, 1, 1, 0, 0);
+    CHECK(transfer_gate(dex, &dex->mons[0], 1) == XFER_EGG);
+    arm_save(&dex->saves[1], "R/S", 8, 0);
+    CHECK(transfer_gate(dex, &dex->mons[0], 1) == XFER_OK);
+    arm_save(&dex->saves[0], "B/W", 8, 2);
+    arm_save(&dex->saves[1], "B2/W2", 8, 0);
+    arm_mon(&dex->mons[0], 0, 25, 0, 137, 4);
+    CHECK(transfer_gate(dex, &dex->mons[0], 1) == XFER_MAIL);
+    arm_mon(&dex->mons[0], 0, 25, 0, 0, 0);
+    dex->saves[0].count = 1;
+    CHECK(transfer_gate(dex, &dex->mons[0], 1) == XFER_LAST);
+    dex->saves[0].count = 2;
+    dex->saves[1].count = (uint16_t)(24 * 30 + 6);
+    CHECK(transfer_gate(dex, &dex->mons[0], 1) == XFER_ROOM);
+    dex->saves[1].count = 0;
+    arm_save(&dex->saves[0], "FR/LG", 8, 2);
+    arm_save(&dex->saves[1], "D/P", 8, 0);
+    arm_mon(&dex->mons[0], 0, 1, 0, 376, 3);
+    CHECK(transfer_gate(dex, &dex->mons[0], 1) == XFER_ITEM);
+    arm_mon(&dex->mons[0], 0, 649, 0, 0, 0);
+    CHECK(transfer_gate(dex, &dex->mons[0], 1) == XFER_GENERATION);
+
+    dex_clear(dex);
+    dex->save_count = 1;
+    strcpy(dex->saves[0].game, "R/S");
+    dex->saves[0].badges = 8;
+    CHECK(dex->saves[0].title == 0);
+    CHECK(!title_unlocked(dex, TITLE_RUBY));
+    CHECK(!title_unlocked(dex, TITLE_SAPPHIRE));
+    CHECK(titles_unlocked(dex) == 0);
+    save_set_title(&dex->saves[0], TITLE_RUBY);
+    CHECK(title_unlocked(dex, TITLE_RUBY));
+    CHECK(!title_unlocked(dex, TITLE_SAPPHIRE));
+    dex->saves[0].badges = 7;
+    CHECK(!title_unlocked(dex, TITLE_RUBY));
+    dex->save_count = TITLE_COUNT;
+    for (i = 0; i < TITLE_COUNT; i++) {
+        save_set_title(&dex->saves[i], i + 1);
+        dex->saves[i].badges = 8;
+    }
+    CHECK(titles_unlocked(dex) == 14);
+    CHECK(special_unlocked(dex));
+    dex->saves[TITLE_HEARTGOLD - 1].badges = 7;
+    dex->saves[TITLE_HEARTGOLD - 1].kanto_badges = 8;
+    CHECK(!title_unlocked(dex, TITLE_HEARTGOLD));
+    CHECK(!special_unlocked(dex));
+    CHECK(titles_unlocked(dex) == 13);
+
+    src = calloc(1, 0x80000);
+    dst = calloc(1, 0x80000);
+    snap = calloc(1, 0x80000);
+    CHECK(src && dst && snap);
+
+    /* HeartGold with only the Kanto badges does not open a trade. Johto does, either way. */
+    fill_pk45(box, 136, 1, 1, 1000, 1, 0, 0, 0);
+    fill_pk45(other, 136, 2, 4, 1000, 1, 0, 0, 0);
+    seal_dp(src, 0xFF);
+    memcpy(src + 0xC104, box, 136);
+    memcpy(src + 0xC104 + 136, other, 136);
+    seal_hgss(dst, 0, 0xFF);
+    memcpy(snap, dst, 0x80000);
+    CHECK(transfer_apply(src, 0x80000, dst, 0x80000, 0, 0, 0, 1, 0, 0, -1, &land) == XFER_BADGES);
+    CHECK(memcmp(dst, snap, 0x80000) == 0);
+    seal_hgss(dst, 0xFF, 0);
+    CHECK(transfer_apply(src, 0x80000, dst, 0x80000, 0, 0, 0, 1, 0, 0, -1, &land) == XFER_OK);
+    memcpy(box, dst + 0xF700, 136);
+    CHECK(pv_decrypt45(box, 136));
+    CHECK(pv_read16(box + 8) == 1 && pv_read32(box) == 1);
+    CHECK(memcmp(src + 0xC104, (uint8_t[136]){0}, 136) == 0);
+    fill_pk45(box, 136, 77, 7, 1000, 1, 0, 0, 0);
+    fill_pk45(other, 136, 78, 10, 1000, 1, 0, 0, 0);
+    seal_hgss(src, 0xFF, 0);
+    memcpy(src + 0xF700, box, 136);
+    memcpy(src + 0xF700 + 136, other, 136);
+    seal_dp(dst, 0xFF);
+    CHECK(transfer_apply(src, 0x80000, dst, 0x80000, 0, 0, 0, 7, 0, 0, -1, &land) == XFER_OK);
+    memcpy(box, dst + 0xC104, 136);
+    CHECK(pv_decrypt45(box, 136));
+    CHECK(pv_read16(box + 8) == 7 && pv_read32(box) == 77);
+
+    /* Same generation, either way, and a trade evolution on the way across. */
+    memset(src, 0, 0x80000);
+    memset(dst, 0, 0x80000);
+    fill_pk45(box, 136, 9, 64, 1000, 1, 0, 0, 0);
+    retouch45(box, 136, 39, 0, 10, 0, 0, ivs, 0, 0);
+    fill_pk45(other, 136, 3, 1, 1000, 1, 0, 0, 0);
+    put_box5(src, 0, box);
+    put_box5(src, 1, other);
+    src[0x21204] = 0xFF;
+    dst[0x21204] = 0xFF;
+    seal_gen5(src, 0x24000, 0x8C, 0x23F34, 4);
+    seal_gen5(dst, 0x24000, 0x8C, 0x23F34, 4);
+    CHECK(transfer_apply(src, 0x80000, dst, 0x80000, 0, 0, 0, 64, 0, 0, -1, &land) == XFER_OK);
+    CHECK(land.species == 65 && land.box == 0 && land.slot == 0 && land.party == 0);
+    memcpy(box, dst + 0x400, 136);
+    CHECK(pv_decrypt45(box, 136));
+    CHECK(pv_read16(box + 8) == 65);
+    CHECK(box[0x14] == species_base_friendship(65));
+    {
+        uint8_t mapped = trade_mapped_ability(64, 0, 5, 39);
+        CHECK(box[0x15] == (mapped ? mapped : 39));
+    }
+    CHECK(memcmp(src + 0x400, (uint8_t[136]){0}, 136) == 0);
+    memcpy(other, src + 0x400 + 136, 136);
+    CHECK(pv_decrypt45(other, 136));
+    CHECK(pv_read16(other + 8) == 1);
+    CHECK(save_bit(dst + 0x21600 + 0x08, 65));
+    CHECK(!save_bit(src + 0x21600 + 0x08, 65));
+
+    /* The last Pokémon, mail, a cross-generation egg, and a full destination. */
+    memset(src, 0, 0x80000);
+    fill_pk45(box, 136, 1, 25, 1000, 1, 0, 0, 0);
+    put_box5(src, 0, box);
+    src[0x21204] = 0xFF;
+    seal_gen5(src, 0x24000, 0x8C, 0x23F34, 5);
+    memset(dst, 0, 0x80000);
+    dst[0x21204] = 0xFF;
+    seal_gen5(dst, 0x24000, 0x8C, 0x23F34, 5);
+    memcpy(snap, src, 0x80000);
+    CHECK(transfer_apply(src, 0x80000, dst, 0x80000, 0, 0, 0, 25, 0, 0, -1, NULL) == XFER_LAST);
+    CHECK(memcmp(src, snap, 0x80000) == 0);
+
+    fill_pk45(other, 136, 2, 4, 1000, 1, 0, 0, 0);
+    put_box5(src, 1, other);
+    retouch45(box, 136, 1, 137, 70, 0, 0, ivs, 0, 0);
+    put_box5(src, 0, box);
+    seal_gen5(src, 0x24000, 0x8C, 0x23F34, 5);
+    memcpy(snap, dst, 0x80000);
+    CHECK(transfer_apply(src, 0x80000, dst, 0x80000, 0, 0, 0, 25, 0, 0, -1, NULL) == XFER_MAIL);
+    CHECK(memcmp(dst, snap, 0x80000) == 0);
+
+    fill_pk45(box, 136, 1, 1, 1000, 1, 0, 1, 0);
+    fill_pk45(other, 136, 2, 4, 1000, 1, 0, 0, 0);
+    seal_dp(src, 0xFF);
+    memcpy(src + 0xC104, box, 136);
+    memcpy(src + 0xC104 + 136, other, 136);
+    memset(dst, 0, 0x80000);
+    dst[0x21204] = 0xFF;
+    seal_gen5(dst, 0x24000, 0x8C, 0x23F34, 6);
+    memcpy(snap, dst, 0x80000);
+    CHECK(transfer_apply(src, 0x80000, dst, 0x80000, 0, 0, 0, 1, 0, 0, -1, NULL) == XFER_EGG);
+    CHECK(memcmp(dst, snap, 0x80000) == 0);
+
+    fill_pk45(box, 136, 1, 1, 1000, 1, 0, 0, 0);
+    fill_pk45(other, 136, 2, 4, 1000, 1, 0, 0, 0);
+    memset(src, 0, 0x80000);
+    put_box5(src, 0, box);
+    put_box5(src, 1, other);
+    src[0x21204] = 0xFF;
+    seal_gen5(src, 0x24000, 0x8C, 0x23F34, 6);
+    memset(dst, 0, 0x80000);
+    fill_pk45(box, 136, 8, 10, 1000, 1, 0, 0, 0);
+    fill_pk45(party, 220, 8, 10, 1000, 1, 0, 0, 5);
+    for (i = 0; i < 24; i++) {
+        int slot;
+        for (slot = 0; slot < 30; slot++)
+            memcpy(dst + 0x400 + i * 0x1000 + slot * 136, box, 136);
+    }
+    dst[0x18E04] = 6;
+    for (i = 0; i < 6; i++)
+        memcpy(dst + 0x18E08 + i * 220, party, 220);
+    dst[0x21204] = 0xFF;
+    seal_gen5(dst, 0x24000, 0x8C, 0x23F34, 7);
+    memcpy(snap, src, 0x80000);
+    CHECK(transfer_apply(src, 0x80000, dst, 0x80000, 0, 0, 0, 1, 0, 0, -1, NULL) == XFER_ROOM);
+    CHECK(memcmp(src, snap, 0x80000) == 0);
+
+    /* Pal Park keeps the record and does not evolve. Generation 3 cannot skip to 5. */
+    memset(src, 0, 0x20000);
+    g3_loc(src, 1, 0x1320)[0] = 0x80;
+    g3_loc(src, 1, 0x1321)[0] = 0x7F;
+    fill_pk3(g3, 80, 0x12345678u, 1, 1000, 0x1111, 0x2222, 0);
+    CHECK(pv_decrypt3(g3));
+    pv_write16(g3 + 0x22, 13);
+    g3[0x12] = 2;
+    pv_write16(g3 + 0x46, (uint16_t)((2u << 7) | (4u << 11)));
+    pv_refresh_checksum3(g3);
+    pv_encrypt3(g3);
+    memcpy(src + 5 * 0x1000 + 4, g3, 80);
+    fill_pk3(g3, 80, 9, 4, 1000, 1, 0, 0);
+    memcpy(src + 5 * 0x1000 + 4 + 80, g3, 80);
+    seal_g3_at(src, 3);
+    seal_dp(dst, 0xFF);
+    CHECK(transfer_apply(src, 0x20000, dst, 0x80000, 0, 0, 0, 1, 0, 0, -1, &land) == XFER_OK);
+    CHECK(land.species == 1 && land.item == 17 && land.item_gen == 4 && land.met_loc == 55);
+    CHECK(land.ball == 4);
+    memcpy(box, dst + 0xC104, 136);
+    CHECK(pv_decrypt45(box, 136));
+    CHECK(pv_read32(box) == 0x12345678u);
+    CHECK(pv_read16(box + 8) == 1);
+    CHECK(pv_read16(box + 0x0A) == 17);
+    CHECK(pv_read16(box + 0x0C) == 0x1111);
+    CHECK(pv_read16(box + 0x0E) == 0x2222);
+    CHECK(box[0x14] == 70);
+    CHECK(box[0x15] == species_ability(1, 0));
+    CHECK(box[0x17] == 2);
+    CHECK(box[0x5F] == 2);
+    CHECK(box[0x83] == 4);
+    CHECK(pv_read16(box + 0x80) == 55);
+    CHECK(pv_read16(box + 0x46) == 0);
+    CHECK((box[0x84] & 0x7F) == pv_level_from_exp(1000, species_growth(1)));
+    now = time(NULL);
+    when = localtime(&now);
+    CHECK(when != NULL);
+    CHECK(box[0x7B] == (uint8_t)(when->tm_year - 100));
+    CHECK(box[0x7C] == (uint8_t)(when->tm_mon + 1));
+    CHECK(box[0x7D] == (uint8_t)when->tm_mday);
+    CHECK(memcmp(src + 5 * 0x1000 + 4, (uint8_t[80]){0}, 80) == 0);
+    CHECK(save_bit(dst + 0x12DC + 4, 1));
+
+    seal_hgss(dst, 0xFF, 0);
+    memset(src, 0, 0x20000);
+    g3_loc(src, 1, 0x1320)[0] = 0x80;
+    g3_loc(src, 1, 0x1321)[0] = 0x7F;
+    fill_pk3(g3, 80, 0x55u, 1, 1000, 1, 0, 0);
+    memcpy(src + 5 * 0x1000 + 4, g3, 80);
+    fill_pk3(g3, 80, 9, 4, 1000, 1, 0, 0);
+    memcpy(src + 5 * 0x1000 + 4 + 80, g3, 80);
+    seal_g3_at(src, 4);
+    CHECK(transfer_apply(src, 0x20000, dst, 0x80000, 0, 0, 0, 1, 0, 0, -1, &land) == XFER_OK);
+    CHECK(land.met_loc == 436);
+    memcpy(box, dst + 0xF700, 136);
+    CHECK(pv_decrypt45(box, 136));
+    CHECK(pv_read16(box + 0x46) == 436);
+
+    memset(src, 0, 0x20000);
+    g3_loc(src, 1, 0x1320)[0] = 0x80;
+    g3_loc(src, 1, 0x1321)[0] = 0x7F;
+    fill_pk3(g3, 80, 1, 1, 1000, 1, 0, 0);
+    CHECK(pv_decrypt3(g3));
+    pv_write16(g3 + 0x22, 376);
+    pv_refresh_checksum3(g3);
+    pv_encrypt3(g3);
+    memcpy(src + 5 * 0x1000 + 4, g3, 80);
+    fill_pk3(g3, 80, 9, 4, 1000, 1, 0, 0);
+    memcpy(src + 5 * 0x1000 + 4 + 80, g3, 80);
+    seal_g3_at(src, 5);
+    seal_dp(dst, 0xFF);
+    memcpy(snap, dst, 0x80000);
+    CHECK(transfer_apply(src, 0x20000, dst, 0x80000, 0, 0, 0, 1, 0, 0, -1, NULL) == XFER_ITEM);
+    CHECK(memcmp(dst, snap, 0x80000) == 0);
+
+    memset(dst, 0, 0x80000);
+    dst[0x21204] = 0xFF;
+    seal_gen5(dst, 0x24000, 0x8C, 0x23F34, 8);
+    memcpy(snap, dst, 0x80000);
+    CHECK(transfer_apply(src, 0x20000, dst, 0x80000, 0, 0, 0, 1, 0, 0, -1, NULL) == XFER_GENERATION);
+    CHECK(memcmp(dst, snap, 0x80000) == 0);
+
+    /* Poké Transfer strips the item and keeps the forme. */
+    memset(src, 0, 0x80000);
+    fill_pk45(box, 136, 26, 479, 1000, 7, 8, 0, 0);
+    retouch45(box, 136, 33, 17, 40, 0, 0, ivs, 0, 0);
+    CHECK(pv_decrypt45(box, 136));
+    box[0x40] = (uint8_t)(2u << 3);
+    box[0x5F] = 10;
+    pv_write16(box + 0x48, 0x12B);
+    pv_write16(box + 0x4A, 0xFFFF);
+    pv_refresh_checksum45(box);
+    pv_encrypt45(box, 136);
+    fill_pk45(other, 136, 2, 4, 1000, 1, 0, 0, 0);
+    seal_dp(src, 0xFF);
+    memcpy(src + 0xC104, box, 136);
+    memcpy(src + 0xC104 + 136, other, 136);
+    memset(dst, 0, 0x80000);
+    dst[0x21204] = 0xFF;
+    seal_gen5(dst, 0x24000, 0x8C, 0x23F34, 9);
+    CHECK(transfer_apply(src, 0x80000, dst, 0x80000, 0, 0, 0, 479, 0, 0, -1, &land) == XFER_OK);
+    CHECK(land.species == 479 && land.item == 0 && land.met_loc == 30001 && land.form == 2);
+    memcpy(box, dst + 0x400, 136);
+    CHECK(pv_decrypt45(box, 136));
+    CHECK(pv_read16(box + 8) == 479);
+    CHECK(pv_read16(box + 0x0A) == 0);
+    CHECK(pv_read32(box) == 26);
+    CHECK(box[0x15] == 33);
+    CHECK((box[0x40] >> 3) == 2);
+    CHECK(box[0x41] == (uint8_t)(26u % 25u));
+    CHECK(pv_read16(box + 0x80) == 30001);
+    CHECK(pv_read16(box + 0x46) == 0);
+    CHECK(box[0x14] == species_base_friendship(479));
+    CHECK(box[0x48] == 'A' && box[0x49] == 0);
+    CHECK(box[0x4A] == 0xFF && box[0x4B] == 0xFF);
+
+    memset(src, 0, 0x80000);
+    fill_pk45(box, 136, 1, 25, 1000, 1, 0, 0, 0);
+    fill_pk45(other, 136, 2, 4, 1000, 1, 0, 0, 0);
+    put_box5(src, 0, box);
+    put_box5(src, 1, other);
+    src[0x21204] = 0xFF;
+    seal_gen5(src, 0x24000, 0x8C, 0x23F34, 9);
+    seal_dp(dst, 0xFF);
+    memcpy(snap, dst, 0x80000);
+    CHECK(transfer_apply(src, 0x80000, dst, 0x80000, 0, 0, 0, 25, 0, 0, -1, NULL) == XFER_GENERATION);
+    CHECK(memcmp(dst, snap, 0x80000) == 0);
+
+    /* Karrablast evolves only when Shelmet comes back the other way. */
+    memset(src, 0, 0x80000);
+    memset(dst, 0, 0x80000);
+    fill_pk45(box, 136, 1, 588, 1000, 1, 0, 0, 0);
+    retouch45(box, 136, 68, 20, 10, 0, 0, ivs, 0, 0);
+    fill_pk45(other, 136, 2, 4, 1000, 1, 0, 0, 0);
+    put_box5(src, 0, box);
+    put_box5(src, 1, other);
+    src[0x21204] = 0xFF;
+    dst[0x21204] = 0xFF;
+    seal_gen5(src, 0x24000, 0x8C, 0x23F34, 10);
+    seal_gen5(dst, 0x24000, 0x8C, 0x23F34, 10);
+    CHECK(transfer_apply(src, 0x80000, dst, 0x80000, 0, 0, 0, 588, 0, 0, -1, &land) == XFER_OK);
+    CHECK(land.species == 588);
+    memcpy(box, dst + 0x400, 136);
+    CHECK(pv_decrypt45(box, 136));
+    CHECK(pv_read16(box + 8) == 588 && pv_read16(box + 0x0A) == 20);
+
+    memset(src, 0, 0x80000);
+    memset(dst, 0, 0x80000);
+    fill_pk45(box, 136, 1, 588, 1000, 1, 0, 0, 0);
+    retouch45(box, 136, 68, 20, 10, 0, 0, ivs, 0, 0);
+    fill_pk45(other, 136, 4, 616, 1000, 1, 0, 0, 0);
+    retouch45(other, 136, 93, 21, 10, 0, 0, ivs, 0, 0);
+    put_box5(src, 0, box);
+    put_box5(dst, 0, other);
+    src[0x21204] = 0xFF;
+    dst[0x21204] = 0xFF;
+    seal_gen5(src, 0x24000, 0x8C, 0x23F34, 11);
+    seal_gen5(dst, 0x24000, 0x8C, 0x23F34, 11);
+    CHECK(transfer_apply(src, 0x80000, dst, 0x80000, 0, 0, 0, 588, 0, 0, 0, &land) == XFER_OK);
+    CHECK(land.species == 589);
+    memcpy(box, dst + 0x400, 136);
+    CHECK(pv_decrypt45(box, 136));
+    CHECK(pv_read16(box + 8) == 589 && box[0x15] == 68 && pv_read16(box + 0x0A) == 20);
+    memcpy(other, src + 0x400, 136);
+    CHECK(pv_decrypt45(other, 136));
+    CHECK(pv_read16(other + 8) == 617 && other[0x15] == 93);
+
+    /* Both files come back if the source rename fails. A finished send keeps a .bak. */
+    memset(src, 0, 0x80000);
+    memset(dst, 0, 0x80000);
+    fill_pk45(box, 136, 11, 1, 1000, 1, 0, 0, 0);
+    fill_pk45(other, 136, 12, 4, 1000, 1, 0, 0, 0);
+    put_box5(src, 0, box);
+    put_box5(src, 1, other);
+    src[0x21204] = 0xFF;
+    dst[0x21204] = 0xFF;
+    seal_gen5(src, 0x24000, 0x8C, 0x23F34, 12);
+    seal_gen5(dst, 0x24000, 0x8C, 0x23F34, 12);
+    CHECK(write_bin("build-host/xfer-src.sav", src, 0x80000));
+    CHECK(write_bin("build-host/xfer-dst.sav", dst, 0x80000));
+    dex_clear(dex);
+    CHECK(save_read(dex, "Black", src, 0x80000));
+    CHECK(save_read(dex, "White", dst, 0x80000));
+    strcpy(dex->saves[0].path, "build-host/xfer-src.sav");
+    strcpy(dex->saves[1].path, "build-host/xfer-dst.sav");
+    moved = NULL;
+    for (i = 0; i < dex->mon_count; i++) {
+        if (dex->mons[i].species == 1) {
+            moved = &dex->mons[i];
+            break;
+        }
+    }
+    CHECK(moved != NULL);
+    transfer_fail_next_source_rename();
+    CHECK(transfer_commit(dex, moved, 1) == XFER_IO);
+    CHECK(file_match("build-host/xfer-src.sav", src, 0x80000));
+    CHECK(file_match("build-host/xfer-dst.sav", dst, 0x80000));
+    CHECK(moved->species == 1 && moved->save_index == 0);
+
+    CHECK(transfer_commit(dex, moved, 1) == XFER_OK);
+    CHECK(moved->species == 1 && moved->save_index == 1);
+    CHECK(dex->saves[0].count == 1 && dex->saves[1].count == 1);
+    CHECK(save_bit(dex->saves[1].dex_caught, 1));
+    CHECK(file_match("build-host/xfer-src.sav.bak", src, 0x80000));
+    CHECK(file_match("build-host/xfer-dst.sav.bak", dst, 0x80000));
+    CHECK(read_match_slot("build-host/xfer-dst.sav"));
+
+    free(src);
+    free(dst);
+    free(snap);
+}
+
+static int read_match_slot(const char *path)
+{
+    FILE *in = fopen(path, "rb");
+    uint8_t box[136];
+    if (!in)
+        return 0;
+    if (fseek(in, 0x400, SEEK_SET) != 0 || fread(box, 1, 136, in) != 136) {
+        fclose(in);
+        return 0;
+    }
+    fclose(in);
+    if (!pv_decrypt45(box, 136))
+        return 0;
+    return pv_read16(box + 8) == 1 && pv_read32(box) == 11;
+}
+
 static void test_rejects_garbage(Dex *dex)
 {
     uint8_t junk[128];
@@ -1965,6 +2532,7 @@ int main(void)
     test_prefs(&dex);
     test_evo();
     test_trade(&dex);
+    test_transfer(&dex);
     test_rejects_garbage(&dex);
     if (fails) {
         printf("%d checks failed\n", fails);

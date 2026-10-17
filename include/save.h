@@ -76,17 +76,22 @@ typedef struct {
     char path[SAVE_PATH_MAX];
     /* In-game trainer name. Empty when the save did not have one. */
     char trainer[16];
-    char game[8];
+    char game[16];
     uint32_t money;
     uint16_t hours;
     uint16_t count;
     uint8_t minutes;
     uint8_t seconds;
-    /* Gym badges currently held. badge_slots is 8, or 16 in HeartGold and
-       SoulSilver. stars is the trainer card level. star_slots is 4 in
-       Generation 3 and 5 in Generations 4 and 5. */
+    /* Gym badges currently held. Always the 8 of that game. HeartGold and
+       SoulSilver keep Johto here; their Kanto badges are kanto_badges and
+       do not count toward the 8. stars is the trainer card level.
+       star_slots is 4 in Generation 3 and 5 in Generations 4 and 5.
+       title is 1..14 when a sibling ROM named the cartridge, otherwise 0
+       and game stays the pair label (R/S, HG/SS, and the rest). */
     uint8_t badges;
     uint8_t badge_slots;
+    uint8_t kanto_badges;
+    uint8_t title;
     uint8_t stars;
     uint8_t star_slots;
     /* Pokédex registration for this save, separate from Pokémon still stored. */
@@ -117,5 +122,48 @@ int dex_species_rows(const Dex *dex, SpeciesRow *out, int cap);
 /* Reads one save. Returns false when the file is not a Gen 3, 4, or 5 save.
    Never writes to the buffer. */
 bool save_read(Dex *dex, const char *display_name, const uint8_t *data, size_t len);
+
+/* The 14 cartridges that connect before the 3DS, in Pokédex order. */
+enum {
+    TITLE_NONE = 0,
+    TITLE_RUBY = 1,
+    TITLE_SAPPHIRE = 2,
+    TITLE_EMERALD = 3,
+    TITLE_FIRERED = 4,
+    TITLE_LEAFGREEN = 5,
+    TITLE_DIAMOND = 6,
+    TITLE_PEARL = 7,
+    TITLE_PLATINUM = 8,
+    TITLE_HEARTGOLD = 9,
+    TITLE_SOULSILVER = 10,
+    TITLE_BLACK = 11,
+    TITLE_WHITE = 12,
+    TITLE_BLACK2 = 13,
+    TITLE_WHITE2 = 14,
+    TITLE_COUNT = 14,
+    DESIGN_SPECIAL = 15
+};
+
+/* 3, 4, or 5. Pair labels and specific titles both count. 0 is unknown. */
+int game_generation(const char *game);
+
+/* 1..14, or 0 when the name is a pair label or something else. */
+int game_title(const char *game);
+
+const char *title_name(int title);
+int title_generation(int title);
+
+/* Four-byte ROM code, region letter included. 0 when it is not one of the 14. */
+int title_from_code(const char *code);
+
+/* Writes the title's name into game and stores the id. A paired save stays
+   as it was when title is 0. */
+void save_set_title(SaveInfo *info, int title);
+
+/* 1 when some save of this title has its 8 gym badges. A pair label unlocks
+   neither side. */
+int title_unlocked(const Dex *dex, int title);
+int titles_unlocked(const Dex *dex);
+int special_unlocked(const Dex *dex);
 
 #endif

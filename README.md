@@ -8,11 +8,11 @@ Every save on the card, gathered into one National Dex.
 
 Boot it on a DS that already runs homebrew. PokeVault walks the SD card, reads the Pokémon saves it finds, and lays them out as a single Pokédex from Bulbasaur to Genesect. Generation 3, 4, and 5 share the list. Open a species and every copy you have is there: level, nature, moves, the ball it was caught in, and the game it came from. A shiny shows its shiny sprite.
 
-A trade evolution can be sent out and back from the Evo page, and that writes the save. Which games are hidden is kept in PokeVault's own settings file, and that file can hold more choices later.
+A trade evolution can be sent out and back from the Evo page, and a Pokémon can be sent into another save from the Send page. Both of those write the saves. Which games are hidden, and which design you picked, are kept in PokeVault's own settings file.
 
 An unofficial fan tool, not affiliated with Nintendo, Game Freak, or The Pokémon Company.
 
-**Download:** [pokevault.nds](https://drive.google.com/file/d/1LvC5g9VQ6L-VBDcoDpvZ0nYO8c8tdP0W/view)
+**Download:** [pokevault.nds](pokevault.nds)
 
 Or build it from this source.
 
@@ -36,7 +36,7 @@ A single Pokémon shows:
 - The evolution line. The sprite follows the stage you are on, and the method is the one for that copy's game
 - A sprite, including the shiny sprite
 
-The home menu also has a Games page and a Progress page. Games lists each save with the trainer name, money, play time, and Pokédex count. Open a save to see its party and boxes. Progress is a living dex across the saves left switched on. The top screen is the bar and the five regions. The bottom screen is the highlighted region's ladder: in the dex, living, shiny, seen, and never seen. A copy in a box counts as living, and also as in the dex and seen. Shiny is part of that living count. A region reads Complete once a hatched copy of each of its species is in a box. Eggs do not fill a spot. It also counts the formes you have for Unown, Shellos, Rotom, Deerling, and the other shapes the saves record.
+The home menu also has a Games page, a Progress page, and a Designs page. Games lists each save with the trainer name, money, play time, and Pokédex count. Open a save to see its party and boxes. Progress is a living dex across the saves left switched on. The top screen is the bar and the five regions. The bottom screen is the highlighted region's ladder: in the dex, living, shiny, seen, and never seen. A copy in a box counts as living, and also as in the dex and seen. Shiny is part of that living count. A region reads Complete once a hatched copy of each of its species is in a box. Eggs do not fill a spot. It also counts the formes you have for Unown, Shellos, Rotom, Deerling, and the other shapes the saves record.
 
 ## Trade evolutions
 
@@ -46,7 +46,29 @@ The species in that box or party slot changes. Friendship is set to the new spec
 
 This writes that one save. The previous file is kept as a `.bak` beside it.
 
-Ruby, Sapphire, Emerald, FireRed, LeafGreen, Diamond, Pearl, Platinum, HeartGold, SoulSilver, Black, White, Black 2, and White 2 can be written this way. Feebas still needs high Beauty until Generation 5, so a Prism Scale trade is only offered on a Generation 5 save. Rhyperior, Electivire, Magmortar, Porygon-Z, and Dusknoir are Generation 4 trades. Boldore, Gurdurr, Karrablast, and Shelmet are Generation 5 trades. Karrablast and Shelmet do not take a partner out of the save.
+Ruby, Sapphire, Emerald, FireRed, LeafGreen, Diamond, Pearl, Platinum, HeartGold, SoulSilver, Black, White, Black 2, and White 2 can be written this way. Feebas still needs high Beauty until Generation 5, so a Prism Scale trade is only offered on a Generation 5 save. Rhyperior, Electivire, Magmortar, Porygon-Z, and Dusknoir are Generation 4 trades. Boldore and Gurdurr are Generation 5 trades. Karrablast and Shelmet are not on that list. They evolve only when one is sent for the other.
+
+## Sending a Pokémon
+
+Open a Pokémon and switch to Send. The list is only the saves that can take it. A save that cannot is left off, and one short line says why: badges, the generation, no room, an egg, mail, the last one, or its item.
+
+Both saves need 8 gym badges. On HeartGold and SoulSilver that is the Johto set. Eight Kanto badges, with Johto unfinished, do not count.
+
+A same-generation send can go either way. Generation 3 moves forward into Generation 4 through Pal Park. Generation 4 moves forward into Generation 5 through Poké Transfer. Nothing moves backward, and Generation 3 does not skip ahead to Generation 5. Pal Park and Poké Transfer do not evolve. A move inside a generation does, by the same trades as the Evo page, and a held item those ask for is used up.
+
+The Pokémon is copied from the slot as the game stored it. It leaves the source save, so it is not cloned. It arrives in the first empty box slot, or the first empty party slot when the boxes are full. The destination Pokédex marks the arrival caught and seen. The source Pokédex is left as it was.
+
+Eggs can move inside a generation. An egg does not cross a generation. Mail has to come off first. A held item Pal Park has no index for has to come off first. Poké Transfer drops a legal held item, and does not put it in the bag. The last Pokémon in a save stays there.
+
+A asks, A sends, and B backs out. Both saves are written. Each current file is kept as a `.bak` beside it. If the second save cannot be put in place, both files are put back.
+
+## Designs
+
+Designs is on the home menu. The count, such as 3/14, is how many of the 14 cartridges are unlocked. Gold on black is always there. Each cartridge adds one palette once a save of that game has its 8 gym badges. Ruby and Sapphire can trade before a ROM says which one the save is. Until then that pair unlocks neither design. The special design unlocks when all 14 titles are known and each has 8 gym badges on at least one save.
+
+The choice is remembered in the settings file. The unlocks are counted again every boot from the saves on the card. Removing a save locks that design again. A selected design that is no longer unlocked falls back to gold on black until the save comes back.
+
+A sibling ROM names the cartridge. It is the same file name beside the save, or in the parent folder when the save sits in `saves`. The game code is read from that ROM. An unknown code stays on the pair label and unlocks nothing.
 
 ## Saves it reads
 
@@ -67,8 +89,9 @@ It keeps up to 48 saves and 16,384 Pokémon. Past that, the list says it is full
 
 **Home**
 
-- Up and Down move between Pokédex, Games, and Progress
+- Up and Down move between Pokédex, Games, Progress, and Designs
 - A opens the one you are on
+- Designs shows how many of the 14 looks are unlocked, such as 3/14
 
 **Pokédex**
 
@@ -81,9 +104,10 @@ It keeps up to 48 saves and 16,384 Pokémon. Past that, the list says it is full
 **A species**
 
 - On Stats, Entry, and Weak, Up and Down move between copies
-- L and R switch the bottom screen between Stats, Entry, Weak, and Evo
+- L and R switch the bottom screen between Stats, Entry, Weak, Evo, and Send
 - On Evo, Up and Down move through the line. The sprite follows that stage, and the method under the line is the one that copy's game uses. A opens that species. One you have stored is bright, a shiny is marked shiny, and one you lack is dim
-- On Evo, Y trades the copy you are on when that game evolves it by trade. A held item has to be the one that evolution asks for, and that item is used up. A asks to go ahead, and B cancels. The previous save is kept as a `.bak` next to it
+- On Evo, Y trades the copy you are on when that game evolves it by trade. A held item has to be the one that evolution asks for, and that item is used up. A asks to go ahead, and B cancels. The previous save is kept as a `.bak` next to it. Karrablast and Shelmet are not offered here
+- On Send, Up and Down move through the saves that can take this Pokémon. A asks, A sends, and B backs out. Both saves get a `.bak`. The line under the list is why another save was left off
 - A, or a tap on a move, highlights that move. A again opens it. Up and Down move the highlight, and B leaves it
 - On a move, Up and Down switch moves, and B returns to the highlight
 - B goes back to the list. Opened from a party or box, B returns there
@@ -115,6 +139,13 @@ A toggles a row. On Games or Pokédex, A opens that list. B goes back, and from 
 - In the boxes, the D-pad moves between slots, L and R change box, and A opens that Pokémon
 - B from that Pokémon returns to the party or box you opened it from
 - B from the boxes returns to the save list, and from the save list to the menu
+- HeartGold and SoulSilver show the 8 Johto badges. The Kanto count is beside that, and it does not fill the 8
+
+**Designs**
+
+- Up and Down move through Default, the 14 cartridges, and the special design
+- A locked row stays dim. A uses an unlocked one, including Default
+- B returns to the menu
 
 **Progress**
 
@@ -128,7 +159,7 @@ A toggles a row. On Games or Pokédex, A opens that list. B goes back, and from 
 
 It runs on a DS that already boots homebrew. That includes TWiLight Menu++ on a DSi or 3DS, and a DS or DS Lite with a flashcart running TWiLight Menu or its own kernel. Copy `pokevault.nds` onto the same SD card the menu uses, usually into `roms/nds`, and launch it from the menu like any other homebrew.
 
-The saves can stay where TWiLight already put them. DS saves sit next to the ROM or in `roms/nds/saves`. GBA saves, from GBARunner, sit in `roms/gba`. PokeVault walks the card and reads those `.sav` files in place. It skips TWiLight's own `_nds` folder, and also skips `hiya`, `gm9`, `dcim`, and `private`, so the menu's files are left alone. Scanning only reads saves. A Generation 3, 4, or 5 trade writes the one save you confirmed, and leaves a `.bak` beside it. The hidden-game choice is written to `_nds/pokevault/settings`.
+The saves can stay where TWiLight already put them. DS saves sit next to the ROM or in `roms/nds/saves`. GBA saves, from GBARunner, sit in `roms/gba`. PokeVault walks the card and reads those `.sav` files in place. It skips TWiLight's own `_nds` folder, and also skips `hiya`, `gm9`, `dcim`, and `private`, so the menu's files are left alone. Scanning only reads saves. A Generation 3, 4, or 5 trade writes the one save you confirmed, and leaves a `.bak` beside it. Sending a Pokémon writes both saves, leaves a `.bak` beside each, and puts both back if the second file cannot be renamed into place. The hidden-game choice and the selected design are written to `_nds/pokevault/settings`. Designs are unlocked from the badges on the card each boot, not from that file.
 
 Sprites and music are packed inside `pokevault.nds`. The Pokémon data comes from the SD card. TWiLight Menu tells the homebrew where that `.nds` file is, which is what those packed files need. The dex still opens if a loader omits that path. The sprites and music are just blank.
 

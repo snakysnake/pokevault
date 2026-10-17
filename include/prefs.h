@@ -37,10 +37,14 @@
    written back. A version other than 1 is left untouched, so a future
    container change is not rewritten by an older build.
 
-   Type 1, hidden game: the save path, with no trailing NUL. */
+   Type 1, hidden game: the save path, with no trailing NUL.
+   Type 2, selected design: one byte. 0 is the default gold-on-black look.
+   1..14 are the cartridge designs, in title order. 15 is the special
+   design. Unlocks are not stored here. */
 
 enum {
     PREFS_TYPE_HIDDEN = 1,
+    PREFS_TYPE_DESIGN = 2,
     PREFS_HIDDEN_MAX = 64,
     PREFS_EXTRA_MAX = 8192
 };
@@ -52,6 +56,8 @@ typedef struct {
 typedef struct {
     PrefsHidden hidden[PREFS_HIDDEN_MAX];
     int hidden_count;
+    /* Type 2. 0 is the default look. */
+    uint8_t design;
     /* Record bytes this build does not interpret, kept in file order. */
     uint8_t extra[PREFS_EXTRA_MAX];
     int extra_len;

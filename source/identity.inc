@@ -2074,9 +2074,12 @@ static const char *const loc5_names[154] = {
     "Pledge Grove",
 };
 
+/* HeartGold and SoulSilver keep Pal Park at location 436. */
+static const char loc4_pal_park_hgss[] = "Pal Park";
+
 static const char *const loc5_names_30000[16] = {
     0,
-    0,
+    "Poke Transfer",
     "Link Trade",
     "Link Trade",
     "Kanto",

@@ -703,6 +703,33 @@ uint8_t species_growth(unsigned species)
     return growth[species];
 }
 
+/* Personal-data base friendship through Generation 5. Anything not listed
+   starts at 70, which is what a plain trade writes. */
+uint8_t species_base_friendship(unsigned species)
+{
+    static const uint16_t low35[] = {
+        147, 148, 149, 246, 247, 248, 329, 330, 356, 371, 372, 373,
+        374, 375, 376, 443, 444, 445, 447, 448, 477, 610, 611, 612,
+        633, 634, 635
+    };
+    static const uint16_t high140[] = {
+        35, 36, 39, 40, 113, 172, 173, 174, 175, 176, 183, 184,
+        242, 298, 311, 312, 440, 468
+    };
+    int i;
+    if (species == 0 || species > 649)
+        return 70;
+    for (i = 0; i < (int)(sizeof low35 / sizeof low35[0]); i++) {
+        if (low35[i] == species)
+            return 35;
+    }
+    for (i = 0; i < (int)(sizeof high140 / sizeof high140[0]); i++) {
+        if (high140[i] == species)
+            return 140;
+    }
+    return 70;
+}
+
 /* national = internal + delta[internal - 277], for internal 277..411.
    Values are the PKHeX Table3InternalToNational deltas. */
 static const int8_t gen3_delta[135] = {

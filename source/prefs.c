@@ -140,7 +140,9 @@ bool prefs_decode(Prefs *prefs, const uint8_t *data, size_t len)
             memset(prefs, 0, sizeof *prefs);
             return false;
         }
-        if (type == PREFS_TYPE_HIDDEN) {
+        if (type == PREFS_TYPE_DESIGN && size == 1) {
+            prefs->design = data[at + 4];
+        } else if (type == PREFS_TYPE_HIDDEN) {
             taken = take_hidden(prefs, data + at + 4, size);
             if (taken < 0) {
                 memset(prefs, 0, sizeof *prefs);
@@ -210,6 +212,8 @@ size_t prefs_encode(const Prefs *prefs, uint8_t *out, size_t cap)
         memcpy(out + at, prefs->extra, (size_t)prefs->extra_len);
         at += (size_t)prefs->extra_len;
     }
+    if (!write_record(out, cap, &at, PREFS_TYPE_DESIGN, &prefs->design, 1))
+        return 0;
     pv_write16(out + 12, pv_crc16_ccitt(out + 16, at - 16));
     return at;
 }

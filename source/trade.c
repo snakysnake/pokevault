@@ -64,8 +64,6 @@ static const TradeDef trades[] = {
     { 93, 94, 0, 0, 70, AB(26, 26, 26), AB(26, 26, 26) },
     { 525, 526, 0, 0, 70, AB(5, 5, 159), AB(5, 5, 159) },
     { 533, 534, 0, 0, 70, AB(62, 125, 89), AB(62, 125, 89) },
-    { 588, 589, 0, 0, 70, AB(68, 61, 99), AB(68, 75, 142) },
-    { 616, 617, 0, 0, 70, AB(93, 75, 142), AB(93, 60, 84) },
     { 61, 186, ITEM_KINGS_ROCK, G3_KINGS_ROCK, 70, AB(11, 6, 33), AB(11, 6, 2) },
     { 79, 199, ITEM_KINGS_ROCK, G3_KINGS_ROCK, 70, AB(12, 20, 144), AB(12, 20, 144) },
     { 95, 208, ITEM_METAL_COAT, G3_METAL_COAT, 70, AB(69, 5, 133), AB(69, 5, 125) },
@@ -192,6 +190,14 @@ static uint8_t mapped_ability(uint8_t current, const TradeDef *row)
             return row->to_ab[i] ? row->to_ab[i] : row->to_ab[0];
     }
     return row->to_ab[0];
+}
+
+uint8_t trade_mapped_ability(unsigned species, unsigned held, int generation, uint8_t current)
+{
+    const TradeDef *row = find_trade(species, held, 0, generation);
+    if (!trade_allowed(row, generation))
+        return 0;
+    return mapped_ability(current, row);
 }
 
 static void fill_view(const uint8_t *pk, uint16_t species, MonRef *mon)
@@ -940,18 +946,6 @@ static int side_path(char *dst, size_t cap, const char *path, const char *suffix
     return wrote > 0 && (size_t)wrote < cap;
 }
 
-static int game_generation(const char *game)
-{
-    if (!game)
-        return 0;
-    if (strcmp(game, "R/S") == 0 || strcmp(game, "E") == 0 || strcmp(game, "FR/LG") == 0)
-        return 3;
-    if (strcmp(game, "D/P") == 0 || strcmp(game, "Pt") == 0 || strcmp(game, "HG/SS") == 0)
-        return 4;
-    if (strcmp(game, "B/W") == 0 || strcmp(game, "B2/W2") == 0)
-        return 5;
-    return 0;
-}
 
 static void mark_save_bit(uint8_t *bits, int species)
 {
