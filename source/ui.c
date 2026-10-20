@@ -139,6 +139,16 @@ static int list_span_caught;
 static int boxes_on;
 /* Set while a party or box slot is open, so B returns there. */
 static int from_box;
+/* Main-screen frame layer, so the box picture can cover it. */
+static int top_frame = -1;
+/* Top screen is the box picture, not the text console. */
+static int box_pixels;
+static int grid_key = -1;
+/* Frame pixels stay put across L/R. Only the header and the slots change. */
+static int canvas_ready;
+static u16 *box_bmp;
+
+static void use_text_screen(void);
 static int box_cursor;
 static int slot_cursor;
 static int find_cursor;
@@ -286,6 +296,33 @@ static void write_frame_tile(u16 *gfx, int kind)
     }
 }
 
+static int frame_kind(int x, int y)
+{
+    int top = y == 0;
+    int bottom = y == 23;
+    int left = x == 0;
+    int right = x == 31;
+    if (y >= 24)
+        return 0;
+    if (top && left)
+        return 5;
+    if (top && right)
+        return 6;
+    if (bottom && left)
+        return 7;
+    if (bottom && right)
+        return 8;
+    if (top)
+        return 1;
+    if (bottom)
+        return 2;
+    if (left)
+        return 3;
+    if (right)
+        return 4;
+    return 0;
+}
+
 static void build_frame(int console_id, int sub)
 {
     int id;
@@ -299,35 +336,15 @@ static void build_frame(int console_id, int sub)
         id = bgInitSub(1, BgType_Text4bpp, BgSize_T_256x256, 30, 1);
     else
         id = bgInit(1, BgType_Text4bpp, BgSize_T_256x256, 30, 1);
+    if (!sub)
+        top_frame = id;
     gfx = bgGetGfxPtr(id);
     map = bgGetMapPtr(id);
     for (kind = 0; kind < 9; kind++)
         write_frame_tile(gfx, kind);
     for (y = 0; y < 32; y++) {
         for (x = 0; x < 32; x++) {
-            int top = y == 0;
-            int bottom = y == 23;
-            int left = x == 0;
-            int right = x == 31;
-            kind = 0;
-            if (y < 24) {
-                if (top && left)
-                    kind = 5;
-                else if (top && right)
-                    kind = 6;
-                else if (bottom && left)
-                    kind = 7;
-                else if (bottom && right)
-                    kind = 8;
-                else if (top)
-                    kind = 1;
-                else if (bottom)
-                    kind = 2;
-                else if (left)
-                    kind = 3;
-                else if (right)
-                    kind = 4;
-            }
+            kind = frame_kind(x, y);
             map[y * 32 + x] = (u16)kind;
         }
     }
@@ -2876,6 +2893,7 @@ static void draw_saver(const Dex *dex)
     int row;
     if (saver_mon < 0 || saver_mon >= dex->mon_count)
         return;
+    use_text_screen();
     mon = &dex->mons[saver_mon];
     info = save_of(dex, mon);
     shiny = (mon->flags & MON_SHINY) != 0;
@@ -2932,18 +2950,6 @@ static const MonRef *box_at(const Dex *dex, int save, int which, int slot)
     return NULL;
 }
 
-static int box_fill(const Dex *dex, int save, int which)
-{
-    int n = 0;
-    int slot;
-    int slots = box_slots(which);
-    for (slot = 0; slot < slots; slot++) {
-        if (box_at(dex, save, which, slot))
-            n++;
-    }
-    return n;
-}
-
 static void clamp_box(const Dex *dex)
 {
     int boxes;
@@ -2966,44 +2972,159 @@ static void clamp_box(const Dex *dex)
         slot_cursor = slots - 1;
 }
 
-static void cell_text(const MonRef *mon, char out[5])
+/* Six columns of 40px. A 32px sprite sits in each, under the two header
+   rows and inside the 8px frame. Five rows of 32px end at the bottom edge. */
+enum {
+    BOX_ORIGIN_X = 12,
+    BOX_ORIGIN_Y = 24,
+    BOX_STEP_X = 40,
+    BOX_STEP_Y = 32,
+    BOX_COLS = 6,
+    BOX_ROWS = 5,
+    BOX_SPRITE = 32
+};
+
+static void bmp_glyph(u16 *bmp, int x, int y, unsigned ch, u16 color)
 {
-    const char *src;
+    const uint8_t *row = font_1bpp + (ch & 255) * 8;
+    int py;
+    int px;
+    for (py = 0; py < 8; py++) {
+        uint8_t bits = row[py];
+        for (px = 0; px < 8; px++) {
+            int sx;
+            int sy;
+            if ((bits & (1u << px)) == 0)
+                continue;
+            sx = x + px;
+            sy = y + py;
+            if ((unsigned)sx < 256 && (unsigned)sy < 192)
+                bmp[sy * 256 + sx] = color;
+        }
+    }
+}
+
+static void bmp_text(u16 *bmp, int x, int y, const char *text, u16 color, int maxc)
+{
     int i;
-    if (!mon) {
-        memcpy(out, " -- ", 5);
+    if (!text)
         return;
+    for (i = 0; text[i] && i < maxc; i++)
+        bmp_glyph(bmp, x + i * 8, y, (unsigned char)text[i], color);
+}
+
+static u16 bmp_ink(int ink)
+{
+    return (u16)(BG_PALETTE[(ink & 15) * 16 + 15] | 0x8000);
+}
+
+static void fill_rect(u16 *bmp, int x, int y, int w, int h, u16 color)
+{
+    int py;
+    int px;
+    for (py = 0; py < h; py++) {
+        u16 *row = bmp + (y + py) * 256 + x;
+        for (px = 0; px < w; px++)
+            row[px] = color;
     }
-    if (mon->flags & MON_EGG) {
-        memcpy(out, "Egg ", 5);
+}
+
+/* Party is one row, a box is five. Clear every cell so the shorter grid
+   does not leave the previous box's sprites behind. */
+static void clear_box_slots(u16 *bmp, u16 color)
+{
+    int slot;
+    for (slot = 0; slot < BOX_COLS * BOX_ROWS; slot++) {
+        int col = slot % BOX_COLS;
+        int row = slot / BOX_COLS;
+        fill_rect(bmp, BOX_ORIGIN_X + col * BOX_STEP_X, BOX_ORIGIN_Y + row * BOX_STEP_Y,
+                  BOX_SPRITE, BOX_SPRITE, color);
+    }
+}
+
+/* The text frame, painted into the picture. Direct color needs bit 15 set. */
+static void paint_box_canvas(u16 *bmp)
+{
+    u16 panel = (u16)(BG_PALETTE[1] | 0x8000);
+    u16 edge = (u16)(BG_PALETTE[2] | 0x8000);
+    u16 rim = 0x8000;
+    int x;
+    int y;
+    for (y = 0; y < 192; y++) {
+        for (x = 0; x < 256; x++) {
+            int p = frame_pixel(frame_kind(x >> 3, y >> 3), x & 7, y & 7);
+            u16 c = p == 2 ? edge : p == 1 ? panel : rim;
+            bmp[y * 256 + x] = c;
+        }
+        /* First open paints the whole screen. Yield so the song stays ahead. */
+        if ((y & 31) == 31)
+            music_pump();
+    }
+}
+
+static void use_text_screen(void)
+{
+    if (!box_pixels)
         return;
-    }
-    src = mon->nick[0] ? mon->nick : species_name(mon->species);
-    for (i = 0; i < 4; i++) {
-        unsigned char c = src[i] ? (unsigned char)src[i] : ' ';
-        if (c >= 'a' && c <= 'z')
-            c = (unsigned char)(c - 'a' + 'A');
-        out[i] = (char)c;
-    }
-    out[4] = 0;
+    videoSetMode((REG_DISPCNT & ~7u) | 0u);
+    vramSetBankA(VRAM_A_MAIN_BG);
+    consoleInit(&top_console, 3, BgType_Text4bpp, BgSize_T_256x256, 31, 0, true, false);
+    load_font(&top_console);
+    consoleSetWindow(&top_console, 1, 1, COLS, ROWS);
+    paint_palette(BG_PALETTE);
+    build_frame(top_console.bgId, 0);
+    grid_key = -1;
+    canvas_ready = 0;
+    box_pixels = 0;
+    box_bmp = NULL;
+    sprites_hand_hide();
+}
+
+static void use_box_screen(void)
+{
+    int bg;
+    if (box_pixels)
+        return;
+    videoBgDisable(3);
+    videoSetMode((REG_DISPCNT & ~7u) | 3u);
+    vramSetBankA(VRAM_A_MAIN_BG);
+    bg = bgInit(3, BgType_Bmp16, BgSize_B16_256x256, 0, 0);
+    bgSetPriority(bg, 0);
+    bgSetScroll(bg, 0, 0);
+    bgSetScale(bg, 1 << 8, 1 << 8);
+    bgUpdate();
+    if (top_frame >= 0)
+        bgHide(top_frame);
+    box_bmp = BG_BMP_RAM(0);
+    box_pixels = 1;
+    grid_key = -1;
+    canvas_ready = 0;
+}
+
+static void place_box_hand(void)
+{
+    int col = slot_cursor % BOX_COLS;
+    int row = slot_cursor / BOX_COLS;
+    /* Sits on the left of the sprite, fingertip aimed into the Pokémon. */
+    sprites_hand(BOX_ORIGIN_X + col * BOX_STEP_X, BOX_ORIGIN_Y + row * BOX_STEP_Y + 8);
 }
 
 static void move_slot(uint32_t down)
 {
     int slots = box_slots(box_cursor);
-    int col = slot_cursor % 6;
-    int row = slot_cursor / 6;
-    int rows_n = (slots + 5) / 6;
+    int col = slot_cursor % BOX_COLS;
+    int row = slot_cursor / BOX_COLS;
+    int rows_n = (slots + BOX_COLS - 1) / BOX_COLS;
     if (down & KEY_LEFT && col > 0)
         col--;
-    if (down & KEY_RIGHT && col < 5)
+    if (down & KEY_RIGHT && col < BOX_COLS - 1)
         col++;
     if (down & KEY_UP && row > 0)
         row--;
     if (down & KEY_DOWN && row + 1 < rows_n)
         row++;
-    if (row * 6 + col < slots)
-        slot_cursor = row * 6 + col;
+    if (row * BOX_COLS + col < slots)
+        slot_cursor = row * BOX_COLS + col;
 }
 
 static void draw_box_grid(const Dex *dex)
@@ -3011,45 +3132,85 @@ static void draw_box_grid(const Dex *dex)
     const SaveInfo *info = &dex->saves[game_cursor];
     int which = box_cursor;
     int slots = box_slots(which);
-    int rows_n = (slots + 5) / 6;
-    int r;
-    int c;
+    int key = game_cursor * 32 + which;
+    int rlen;
+    int fill = 0;
+    int slot;
+    int i;
     char right[16];
     char title[16];
+    const MonRef *held[BOX_COLS * BOX_ROWS];
+    u16 *bmp = box_bmp;
+    u16 panel;
 
+    if (!bmp || key == grid_key)
+        return;
+    /* One pass over the dex. Walking every slot from the top scanned it again. */
+    for (slot = 0; slot < slots; slot++)
+        held[slot] = NULL;
+    for (i = 0; i < dex->mon_count; i++) {
+        const MonRef *mon = &dex->mons[i];
+        int at;
+        if ((i & 1023) == 1023)
+            music_pump();
+        if (mon->save_index != (uint8_t)game_cursor)
+            continue;
+        if (which == 0) {
+            if ((mon->flags & MON_PARTY) == 0 || mon->slot >= (uint8_t)slots)
+                continue;
+            at = mon->slot;
+        } else if ((mon->flags & MON_PARTY) != 0 || mon->box != (uint8_t)(which - 1)
+                   || mon->slot >= (uint8_t)slots) {
+            continue;
+        } else {
+            at = mon->slot;
+        }
+        if (!held[at])
+            held[at] = mon;
+    }
+    for (slot = 0; slot < slots; slot++) {
+        if (held[slot])
+            fill++;
+    }
     if (which == 0)
         snprintf(title, sizeof title, "Party");
     else
         snprintf(title, sizeof title, "Box %d", which);
-    snprintf(right, sizeof right, "%d/%d", box_fill(dex, game_cursor, which), slots);
-    title_row(0, title, right);
-    at(1, 0);
-    emit(INK_MUTED, profile_name(info), COLS);
-    for (r = 0; r < rows_n; r++) {
-        for (c = 0; c < 6; c++) {
-            int slot = r * 6 + c;
-            const MonRef *mon;
-            char label[5];
-            int ink;
-            if (slot >= slots)
-                break;
-            mon = box_at(dex, game_cursor, which, slot);
-            cell_text(mon, label);
-            if (slot == slot_cursor)
-                ink = INK_GOLD;
-            else if (mon && (mon->flags & MON_SHINY))
-                ink = INK_SHINY;
-            else if (!mon)
-                ink = INK_MUTED;
-            else
-                ink = INK_CREAM;
-            at(3 + r, c * 5);
-            emit(ink, label, 4);
-        }
+    snprintf(right, sizeof right, "%d/%d", fill, slots);
+    panel = (u16)(BG_PALETTE[1] | 0x8000);
+    if (!canvas_ready) {
+        paint_box_canvas(bmp);
+        canvas_ready = 1;
+    } else {
+        /* The frame did not change. Wipe the old title and sprites only. */
+        fill_rect(bmp, 8, 8, COLS * 8, 16, panel);
+        clear_box_slots(bmp, panel);
     }
-    at(21, 0);
-    use_ink(INK_MUTED);
-    fputs("L/R box", stdout);
+    /* Text sits in the frame's window: tile (1,1) is pixel (8,8). */
+    bmp_text(bmp, 8, 8, title, bmp_ink(INK_CREAM), COLS - 8);
+    rlen = text_len(right);
+    if (rlen > 8)
+        rlen = 8;
+    bmp_text(bmp, 8 + (COLS - rlen) * 8, 8, right, bmp_ink(INK_GOLD), rlen);
+    bmp_text(bmp, 8, 16, profile_name(info), bmp_ink(INK_MUTED), COLS);
+    music_pump();
+    sprites_box_use(which == 0, key);
+    for (slot = 0; slot < slots; slot++) {
+        const MonRef *mon = held[slot];
+        if (!mon)
+            continue;
+        sprites_box_keep(mon->species, (mon->flags & MON_SHINY) != 0, (mon->flags & MON_EGG) != 0);
+    }
+    for (slot = 0; slot < slots; slot++) {
+        const MonRef *mon = held[slot];
+        int col = slot % BOX_COLS;
+        int row = slot / BOX_COLS;
+        if (!mon)
+            continue;
+        sprites_blit(bmp, BOX_ORIGIN_X + col * BOX_STEP_X, BOX_ORIGIN_Y + row * BOX_STEP_Y,
+                     mon->species, (mon->flags & MON_SHINY) != 0, (mon->flags & MON_EGG) != 0);
+    }
+    grid_key = key;
 }
 
 static void draw_box_card(const Dex *dex)
@@ -3067,6 +3228,8 @@ static void draw_box_card(const Dex *dex)
     at(21, 0);
     use_ink(INK_MUTED);
     fputs(mon ? "A dex" : "A", stdout);
+    at(21, 11);
+    fputs("L/R box", stdout);
     at(21, COLS - 6);
     fputs("B back", stdout);
 }
@@ -3850,16 +4013,20 @@ static void draw(const Dex *dex)
     sprites_hide_top();
     if (page == PAGE_GAMES && boxes_on && dex->save_count > 0) {
         clamp_box(dex);
-        consoleSelect(&top_console);
-        consoleClear();
-        use_ink(INK_CREAM);
+        use_box_screen();
+        /* Move the hand before the grid reads the card, so L/R does not
+           leave it on the previous slot while the pictures load. */
+        place_box_hand();
+        sprites_flush();
         draw_box_grid(dex);
         consoleSelect(&bottom_console);
         consoleClear();
         use_ink(INK_CREAM);
         draw_box_card(dex);
+        place_box_hand();
         return;
     }
+    use_text_screen();
     if (page != PAGE_DEX) {
         consoleSelect(&top_console);
         consoleClear();
@@ -4283,6 +4450,11 @@ void ui_run(Dex *dex)
             const MonRef *mon = &dex->mons[saver_mon];
             saver_tick++;
             sprites_show_top(mon->species, (mon->flags & MON_SHINY) != 0, 0, saver_dy());
+        } else if (page == PAGE_GAMES && boxes_on) {
+            static const int bob_step[4] = {0, 1, 2, 1};
+            static int hand_tick;
+            sprites_hand_nudge(bob_step[(hand_tick / 10) & 3]);
+            hand_tick++;
         }
         sprites_flush();
         scanKeys();

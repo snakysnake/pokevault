@@ -1,5 +1,6 @@
 sprites.o: /Users/lucacaspari/Development/pokevault/source/sprites.c \
  /Users/lucacaspari/Development/pokevault/include/sprites.h \
+ /Users/lucacaspari/Development/pokevault/include/music.h \
  /opt/devkitpro/libnds/include/nds.h \
  /opt/devkitpro/calico/include/calico.h \
  /opt/devkitpro/calico/include/calico/types.h \
@@ -114,6 +115,7 @@ sprites.o: /Users/lucacaspari/Development/pokevault/source/sprites.c \
  /opt/devkitpro/libnds/include/nds/arm9/video.h \
  /opt/devkitpro/libnds/include/nds/arm9/videoGL.h
 /Users/lucacaspari/Development/pokevault/include/sprites.h:
+/Users/lucacaspari/Development/pokevault/include/music.h:
 /opt/devkitpro/libnds/include/nds.h:
 /opt/devkitpro/calico/include/calico.h:
 /opt/devkitpro/calico/include/calico/types.h:

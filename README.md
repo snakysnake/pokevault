@@ -136,7 +136,8 @@ A toggles a row. On Games or Pokédex, A opens that list. B goes back, and from 
 - Y asks to hide the save you are on. A hides it, and B cancels. That is the same switch as Filter, Games, Off, and it is still hidden next boot
 - Turn a hidden save back on from the Pokédex filter, under Games
 - A opens that save's party and boxes
-- In the boxes, the D-pad moves between slots, L and R change box, and A opens that Pokémon
+- In the party and boxes, each Pokémon shows as its sprite. A shiny uses the shiny sprite. An egg shows as an egg
+- The D-pad moves a hand from slot to slot. L and R change box, and A opens that Pokémon
 - B from that Pokémon returns to the party or box you opened it from
 - B from the boxes returns to the save list, and from the save list to the menu
 - HeartGold and SoulSilver show the 8 Johto badges. The Kanto count is beside that, and it does not fill the 8
